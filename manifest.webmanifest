@@ -1,0 +1,32 @@
+{
+  "name": "Watchline",
+  "short_name": "Watchline",
+  "description": "Seu arquivo pessoal de séries e filmes.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#101414",
+  "theme_color": "#101414",
+  "categories": ["entertainment", "productivity"],
+  "icons": [
+    {
+      "src": "./assets/watchline-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./assets/watchline-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./assets/watchline-icon.svg",
+      "sizes": "64x64",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
