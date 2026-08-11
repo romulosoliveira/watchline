@@ -45,6 +45,18 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
 .app-shell {
   min-height: 100vh;
 }
@@ -77,36 +89,21 @@ button {
 
 .brand-mark,
 .loading-mark {
-  position: relative;
   width: 44px;
   height: 44px;
-  display: grid;
-  place-items: center;
   border-radius: var(--radius);
-  overflow: hidden;
-  background:
-    linear-gradient(135deg, rgba(255, 79, 97, 0.95), rgba(255, 79, 97, 0.62)),
-    linear-gradient(315deg, rgba(25, 194, 165, 0.85), transparent 56%),
-    #1d2323;
-  color: white;
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-.brand-mark::after,
-.loading-mark::after {
-  content: "";
-  position: absolute;
-  left: 11px;
-  right: 11px;
-  bottom: 9px;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--accent-2);
+  display: block;
+  object-fit: cover;
+  background: #0d0f10;
 }
 
 .brand-mark {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.loading-mark {
+  width: 72px;
+  height: 72px;
 }
 
 .brand-title {
@@ -339,7 +336,14 @@ button {
   gap: 14px;
   overflow-x: auto;
   padding: 2px 0 12px;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
   scrollbar-color: var(--line) transparent;
+}
+
+.scroller .show-card {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .grid {
@@ -368,6 +372,7 @@ button {
   color: inherit;
   padding: 0;
   text-align: left;
+  touch-action: manipulation;
 }
 
 .cover {
@@ -526,6 +531,11 @@ button {
 
 .search-box .input {
   padding-left: 42px;
+}
+
+.search-box input[type="search"]::-webkit-search-cancel-button {
+  filter: invert(1);
+  opacity: 0.7;
 }
 
 .segmented {
@@ -921,6 +931,16 @@ button {
   }
 }
 
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .mobile-nav {
   display: none;
 }
@@ -1041,6 +1061,13 @@ button {
 
   .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scroller {
+    grid-auto-columns: minmax(142px, 44vw);
+    gap: 12px;
+    margin-inline: -16px;
+    padding-inline: 16px;
   }
 
   .segmented {
