@@ -10,7 +10,8 @@ const TVMAZE_API = "https://api.tvmaze.com";
 const TMDB_API = "https://api.themoviedb.org/3";
 const TMDB_IMAGE = "https://image.tmdb.org/t/p/w500";
 const TMDB_LANGUAGE = "en-US";
-const METADATA_LANGUAGE_VERSION = "en-US-v1";
+const SHOW_METADATA_LANGUAGE_VERSION = "en-US-shows-v1";
+const MOVIE_METADATA_LANGUAGE_VERSION = "en-US-movies-v2";
 const FORGOTTEN_SHOW_DAYS = 90;
 
 const state = {
@@ -1491,7 +1492,7 @@ async function runMoviePosterQueue(candidates) {
 }
 
 function shouldRefreshMoviePoster(movie) {
-  if (movie.metadataLanguageVersion !== METADATA_LANGUAGE_VERSION) return true;
+  if (movie.metadataLanguageVersion !== MOVIE_METADATA_LANGUAGE_VERSION) return true;
   if (mediaImage(movie) && (movie.summary || movie.overview) && movie.genres?.length) return false;
   const updatedAt = parseDateValue(movie.posterUpdatedAt);
   if (!updatedAt) return true;
@@ -1504,7 +1505,7 @@ async function fetchMoviePoster(movie) {
 }
 
 async function updateMovieFromTmdb(movie, { includeDetails = false } = {}) {
-  const needsEnglishMetadata = movie.metadataLanguageVersion !== METADATA_LANGUAGE_VERSION;
+  const needsEnglishMetadata = movie.metadataLanguageVersion !== MOVIE_METADATA_LANGUAGE_VERSION;
   let result = movie.external?.tmdbId ? await fetchTmdbMovieDetails(movie.external.tmdbId) : await findTmdbMovie(movie);
   if (!result) return false;
   mergeTmdbMovieData(movie, result);
@@ -1512,7 +1513,7 @@ async function updateMovieFromTmdb(movie, { includeDetails = false } = {}) {
     const details = await fetchTmdbMovieDetails(result.id);
     mergeTmdbMovieData(movie, details);
   }
-  movie.metadataLanguageVersion = METADATA_LANGUAGE_VERSION;
+  movie.metadataLanguageVersion = MOVIE_METADATA_LANGUAGE_VERSION;
   movie.posterUpdatedAt = new Date().toISOString();
   movie.updatedAt = new Date().toISOString();
   return true;
@@ -1549,9 +1550,7 @@ async function fetchTmdbMovieDetails(tmdbId) {
 function mergeTmdbMovieData(movie, tmdbMovie) {
   const poster = tmdbMovie.poster_path ? `${TMDB_IMAGE}${tmdbMovie.poster_path}` : null;
   const originalLanguage = tmdbMovie.original_language || movie.originalLanguage || null;
-  const preferredTitle = isPortugueseOriginal(originalLanguage)
-    ? tmdbMovie.original_title || tmdbMovie.title
-    : tmdbMovie.title || tmdbMovie.original_title;
+  const preferredTitle = tmdbMovie.title || tmdbMovie.original_title;
   movie.importedTitle = movie.importedTitle || movie.title || null;
   movie.title = preferredTitle || movie.title;
   movie.poster = poster || movie.poster || null;
@@ -1643,7 +1642,7 @@ function isRelevantShow(show) {
 
 function shouldRefreshCatalog(show) {
   if (!hasCatalog(show)) return true;
-  if (state.settings.tmdbToken && show.metadataLookupVersion !== METADATA_LANGUAGE_VERSION) return true;
+  if (state.settings.tmdbToken && show.metadataLookupVersion !== SHOW_METADATA_LANGUAGE_VERSION) return true;
   const updatedAt = parseDateValue(show.catalogUpdatedAt);
   if (!updatedAt) return true;
   return Date.now() - updatedAt > 24 * 60 * 60 * 1000;
@@ -1926,7 +1925,7 @@ function createShowFromTvmaze(tvmazeShow) {
 }
 
 function mergeTvmazeData(show, tvmazeShow, episodes) {
-  const hasLocalizedMetadata = show.metadataLanguageVersion === METADATA_LANGUAGE_VERSION;
+  const hasLocalizedMetadata = show.metadataLanguageVersion === SHOW_METADATA_LANGUAGE_VERSION;
   show.importedTitle = show.importedTitle || show.title || null;
   show.originalTitle = tvmazeShow.name || show.originalTitle || null;
   if (!hasLocalizedMetadata) show.title = tvmazeShow.name || show.title;
@@ -1955,14 +1954,14 @@ async function updateShowEnglishMetadataIfConfigured(show, tvmazeShow) {
   if (!state.settings.tmdbToken) return false;
   try {
     const tmdbShow = await findTmdbShow(show, tvmazeShow);
-    show.metadataLookupVersion = METADATA_LANGUAGE_VERSION;
+    show.metadataLookupVersion = SHOW_METADATA_LANGUAGE_VERSION;
     if (!tmdbShow) return false;
     const details = tmdbShow.number_of_seasons ? tmdbShow : await fetchTmdbShowDetails(tmdbShow.id);
     mergeTmdbShowData(show, details);
     show.metadataError = null;
     return true;
   } catch (error) {
-    show.metadataLookupVersion = METADATA_LANGUAGE_VERSION;
+    show.metadataLookupVersion = SHOW_METADATA_LANGUAGE_VERSION;
     show.metadataError = error.message;
     return false;
   }
@@ -2034,8 +2033,8 @@ function mergeTmdbShowData(show, tmdbShow) {
   show.originalLanguage = originalLanguage;
   show.summary = tmdbShow.overview || show.summary || "";
   show.genres = tmdbShow.genres?.length ? tmdbShow.genres.map((genre) => genre.name).filter(Boolean) : show.genres || [];
-  show.metadataLanguageVersion = METADATA_LANGUAGE_VERSION;
-  show.metadataLookupVersion = METADATA_LANGUAGE_VERSION;
+  show.metadataLanguageVersion = SHOW_METADATA_LANGUAGE_VERSION;
+  show.metadataLookupVersion = SHOW_METADATA_LANGUAGE_VERSION;
   show.external = {
     ...(show.external || {}),
     tmdbId: tmdbShow.id || show.external?.tmdbId || null,
