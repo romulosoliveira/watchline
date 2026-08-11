@@ -1,4 +1,4 @@
-const CACHE_NAME = "watchline-v4";
+const CACHE_NAME = "watchline-v5";
 const APP_SHELL = [
   "./",
   "./index.html",

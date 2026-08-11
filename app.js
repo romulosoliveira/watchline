@@ -301,7 +301,7 @@ function renderView() {
 function renderHomeView() {
   const stats = state.data.stats;
   const continueShows = getShows()
-    .filter((show) => show.followed && !show.archived && watchedCount(show) > 0)
+    .filter((show) => show.followed && !show.archived && watchedCount(show) > 0 && hasNextAvailableEpisode(show))
     .sort((a, b) => lastWatchedTimestamp(b) - lastWatchedTimestamp(a))
     .slice(0, 14);
   const laterShows = getShows()
@@ -315,7 +315,7 @@ function renderHomeView() {
 
   return `
     ${renderStatsSection(stats)}
-    ${renderShelf("Continuar", "Ordenado pelo último episódio registrado", continueShows, "home:continue")}
+    ${renderShelf("Continuar", "Séries com episódios disponíveis para assistir", continueShows, "home:continue")}
     ${renderShelf("Ver Depois", "Séries marcadas como for later", laterShows, "home:later")}
     ${renderShelf("Favoritas", "Listas recuperadas do TV Time", favoriteShows, "home:favorites")}
   `;
@@ -557,6 +557,7 @@ function renderShowDetail() {
   }
   const seasons = hasCatalog(show) ? groupCatalogEpisodes(show) : groupEpisodes(show);
   const next = nextEpisode(show);
+  const caughtUpLabel = isEndedShow(show) ? "Concluída" : "Em dia";
   const progress = hasCatalog(show)
     ? `${formatCount(watchedCount(show))} de ${formatCount(show.catalogEpisodes.length)} episódios vistos`
     : `${formatCount(watchedCount(show))} episódios importados`;
@@ -576,10 +577,17 @@ function renderShowDetail() {
         <h2 class="detail-title">${escapeHtml(show.title)}</h2>
         <p class="page-kicker">${progress}${show.status ? ` · ${escapeHtml(show.status)}` : ""}${lastEpisode(show) ? ` · último S${lastEpisode(show).season}E${lastEpisode(show).number}` : ""}</p>
         <div class="detail-actions">
-          <button class="button primary" data-action="watch-next" data-id="${escapeAttr(show.id)}" ${!hasCatalog(show) ? "" : ""}>
-            <i data-lucide="check-circle"></i>
-            Marcar S${next.season}E${next.number}
-          </button>
+          ${
+            next
+              ? `<button class="button primary" data-action="watch-next" data-id="${escapeAttr(show.id)}">
+                  <i data-lucide="check-circle"></i>
+                  Marcar S${next.season}E${next.number}
+                </button>`
+              : `<button class="button teal" disabled>
+                  <i data-lucide="badge-check"></i>
+                  ${caughtUpLabel}
+                </button>`
+          }
           <button class="button" data-action="fetch-catalog" data-id="${escapeAttr(show.id)}" ${state.catalogLoading ? "disabled" : ""}>
             <i data-lucide="refresh-cw"></i>
             ${hasCatalog(show) ? "Atualizar episódios" : "Buscar episódios"}
@@ -1933,6 +1941,11 @@ async function markNextEpisode(id) {
   const show = getShows().find((item) => item.id === id);
   if (!show) return;
   const next = nextEpisode(show);
+  if (!next) {
+    state.notice = `${show.title} não tem episódio disponível pendente.`;
+    render();
+    return;
+  }
   addEpisode(show, next.season, next.number, { catalogEpisode: next });
   await persistAndRender(`Marcado S${next.season}E${next.number}: ${show.title}`);
 }
@@ -2442,10 +2455,30 @@ function lastEpisode(show) {
   return episodes[episodes.length - 1] || null;
 }
 
+function availableCatalogEpisodes(show) {
+  const today = new Date().toISOString().slice(0, 10);
+  return (show.catalogEpisodes || [])
+    .filter((episode) => Number(episode.season || 0) > 0)
+    .filter((episode) => {
+      const airdate = String(episode.airdate || "").slice(0, 10);
+      return airdate ? airdate <= today : isEndedShow(show);
+    })
+    .sort((a, b) => Number(a.season || 0) - Number(b.season || 0) || Number(a.number || 0) - Number(b.number || 0));
+}
+
+function hasNextAvailableEpisode(show) {
+  if (!hasCatalog(show)) return true;
+  return availableCatalogEpisodes(show).some((episode) => !isEpisodeWatched(show, episode));
+}
+
+function isEndedShow(show) {
+  const status = normalizeText(show.status);
+  return ["ended", "finalizada", "concluida", "cancelled", "canceled"].some((value) => status.includes(value));
+}
+
 function nextEpisode(show) {
   if (hasCatalog(show)) {
-    const next = (show.catalogEpisodes || []).find((episode) => !isEpisodeWatched(show, episode));
-    if (next) return next;
+    return availableCatalogEpisodes(show).find((episode) => !isEpisodeWatched(show, episode)) || null;
   }
   const last = lastEpisode(show);
   if (!last) return { season: 1, number: 1 };
