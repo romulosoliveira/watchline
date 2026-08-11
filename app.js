@@ -133,7 +133,7 @@ function renderSidebar() {
   return `
     <aside class="sidebar">
       <div class="brand">
-        <img class="brand-mark" src="./assets/watchline-192.png" alt="" />
+        <img class="brand-mark" src="./assets/watchline-play-192.png" alt="" />
         <div>
           <p class="brand-title">${APP_NAME}</p>
           <p class="brand-subtitle">${formatCount(state.data.stats.watchedEpisodes)} episódios salvos</p>
@@ -2708,7 +2708,7 @@ function coverVars(title) {
 function renderFatalError(error) {
   return `
     <main class="loading-screen">
-      <img class="loading-mark" src="./assets/watchline-192.png" alt="Watchline" />
+      <img class="loading-mark" src="./assets/watchline-play-192.png" alt="Watchline" />
       <p>${escapeHtml(error.message)}</p>
     </main>
   `;
