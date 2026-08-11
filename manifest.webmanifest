@@ -1,7 +1,7 @@
 {
   "name": "Watchline",
   "short_name": "Watchline",
-  "description": "Seu arquivo pessoal de séries e filmes.",
+  "description": "Your personal archive of shows and movies.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
