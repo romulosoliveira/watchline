@@ -473,6 +473,17 @@ select:focus-visible {
   margin-bottom: 18px;
 }
 
+.show-search-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.show-search-row .segmented {
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
 .view-actions {
   display: flex;
   flex-wrap: wrap;
