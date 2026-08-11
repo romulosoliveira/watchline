@@ -9,6 +9,7 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const TVMAZE_API = "https://api.tvmaze.com";
 const TMDB_API = "https://api.themoviedb.org/3";
 const TMDB_IMAGE = "https://image.tmdb.org/t/p/w500";
+const FORGOTTEN_SHOW_DAYS = 90;
 
 const state = {
   data: null,
@@ -408,11 +409,16 @@ function renderShowsView() {
         <input class="input" type="search" data-input="search" value="${escapeAttr(state.search)}" autocomplete="off" enterkeyhint="search" placeholder="Buscar série" />
       </label>
       <div class="segmented" role="tablist">
-        ${renderFilterButton("show", "active", "Ativas")}
-        ${renderFilterButton("show", "later", "Ver depois")}
-        ${renderFilterButton("show", "favorites", "Favoritas")}
-        ${renderFilterButton("show", "archived", "Arquivadas")}
-        ${renderFilterButton("show", "all", "Todas")}
+        ${renderShowFilterButton("active", "Ativas")}
+        ${renderShowFilterButton("continuing", "Continuar")}
+        ${renderShowFilterButton("up-to-date", "Em dia")}
+        ${renderShowFilterButton("waiting", "Aguardando")}
+        ${renderShowFilterButton("forgotten", "Esquecidas")}
+        ${renderShowFilterButton("completed", "Concluídas")}
+        ${renderShowFilterButton("later", "Ver depois")}
+        ${renderShowFilterButton("favorites", "Favoritas")}
+        ${renderShowFilterButton("archived", "Arquivadas")}
+        ${renderShowFilterButton("all", "Todas")}
       </div>
     </div>
     ${renderLibraryControls("show")}
@@ -484,6 +490,12 @@ function renderFilterButton(kind, value, label) {
   return `<button class="${active ? "active" : ""}" data-action="${kind}-filter" data-filter="${value}">${label}</button>`;
 }
 
+function renderShowFilterButton(value, label) {
+  const active = state.showFilter === value;
+  const count = getShows().filter((show) => matchesShowFilter(show, value)).length;
+  return `<button class="${active ? "active" : ""}" data-action="show-filter" data-filter="${value}">${label}<span class="filter-count">${formatCount(count)}</span></button>`;
+}
+
 function renderLibraryControls(kind) {
   const genres = kind === "show" ? availableShowGenres() : availableMovieGenres();
   const selectedGenre = kind === "show" ? state.showGenreFilter : state.movieGenreFilter;
@@ -529,8 +541,9 @@ function renderShowCard(show) {
   const last = lastWatchedEpisode(show) || lastEpisode(show);
   const image = mediaImage(show);
   const year = mediaYear(show.premiered);
+  const trackingStatus = showTrackingStatus(show);
   const badges = [
-    hasCatalog(show) ? `<span class="badge teal">Catálogo</span>` : "",
+    renderShowTrackingBadge(trackingStatus),
     show.favorite ? `<span class="badge gold">Favorita</span>` : "",
     show.forLater ? `<span class="badge teal">Ver depois</span>` : "",
     show.archived ? `<span class="badge">Arquivada</span>` : "",
@@ -557,7 +570,8 @@ function renderShowDetail() {
   }
   const seasons = hasCatalog(show) ? groupCatalogEpisodes(show) : groupEpisodes(show);
   const next = nextEpisode(show);
-  const caughtUpLabel = isEndedShow(show) ? "Concluída" : "Em dia";
+  const trackingStatus = showTrackingStatus(show);
+  const caughtUpLabel = trackingStatus.key === "waiting" ? "Aguardando" : trackingStatus.label;
   const progress = hasCatalog(show)
     ? `${formatCount(watchedCount(show))} de ${formatCount(show.catalogEpisodes.length)} episódios vistos`
     : `${formatCount(watchedCount(show))} episódios importados`;
@@ -576,6 +590,7 @@ function renderShowDetail() {
         </button>
         <h2 class="detail-title">${escapeHtml(show.title)}</h2>
         <p class="page-kicker">${progress}${show.status ? ` · ${escapeHtml(show.status)}` : ""}${lastEpisode(show) ? ` · último S${lastEpisode(show).season}E${lastEpisode(show).number}` : ""}</p>
+        <div class="badges detail-status">${renderShowTrackingBadge(trackingStatus)}</div>
         <div class="detail-actions">
           ${
             next
@@ -2318,14 +2333,26 @@ function filterShows() {
   const q = normalizeText(state.search);
   return getShows()
     .filter((show) => {
-      if (state.showFilter === "active" && !isActiveShow(show)) return false;
-      if (state.showFilter === "later" && !show.forLater) return false;
-      if (state.showFilter === "favorites" && !show.favorite) return false;
-      if (state.showFilter === "archived" && !show.archived) return false;
+      if (!matchesShowFilter(show, state.showFilter)) return false;
       if (state.showGenreFilter !== "all" && !hasGenre(show, state.showGenreFilter)) return false;
       return !q || normalizeText(show.title).includes(q);
     })
     .sort(compareShowsForTab);
+}
+
+function matchesShowFilter(show, filter) {
+  if (filter === "active") return isActiveShow(show);
+  if (filter === "later") return Boolean(show.forLater);
+  if (filter === "favorites") return Boolean(show.favorite);
+  if (filter === "archived") return Boolean(show.archived);
+  if (filter === "all") return true;
+  const trackingStatus = showTrackingStatus(show).key;
+  if (filter === "continuing") return trackingStatus === "continuing" || trackingStatus === "forgotten";
+  if (filter === "up-to-date") return trackingStatus === "up-to-date" || trackingStatus === "waiting";
+  if (filter === "waiting") return trackingStatus === "waiting";
+  if (filter === "forgotten") return trackingStatus === "forgotten";
+  if (filter === "completed") return trackingStatus === "completed";
+  return true;
 }
 
 function filterMovies() {
@@ -2455,10 +2482,15 @@ function lastEpisode(show) {
   return episodes[episodes.length - 1] || null;
 }
 
+function regularCatalogEpisodes(show) {
+  return (show.catalogEpisodes || []).filter(
+    (episode) => Number(episode.season || 0) > 0 && Number(episode.number || 0) > 0,
+  );
+}
+
 function availableCatalogEpisodes(show) {
   const today = new Date().toISOString().slice(0, 10);
-  return (show.catalogEpisodes || [])
-    .filter((episode) => Number(episode.season || 0) > 0)
+  return regularCatalogEpisodes(show)
     .filter((episode) => {
       const airdate = String(episode.airdate || "").slice(0, 10);
       return airdate ? airdate <= today : isEndedShow(show);
@@ -2466,14 +2498,81 @@ function availableCatalogEpisodes(show) {
     .sort((a, b) => Number(a.season || 0) - Number(b.season || 0) || Number(a.number || 0) - Number(b.number || 0));
 }
 
+function futureCatalogEpisodes(show) {
+  const today = new Date().toISOString().slice(0, 10);
+  return regularCatalogEpisodes(show)
+    .filter((episode) => String(episode.airdate || "").slice(0, 10) > today)
+    .sort((a, b) => String(a.airdate).localeCompare(String(b.airdate)) || Number(a.season) - Number(b.season) || Number(a.number) - Number(b.number));
+}
+
+function remainingAvailableEpisodes(show) {
+  const watched = new Set(uniqueEpisodes(show).map((episode) => `${episode.season}:${episode.number}`));
+  return availableCatalogEpisodes(show).filter((episode) => !watched.has(`${Number(episode.season)}:${Number(episode.number)}`));
+}
+
 function hasNextAvailableEpisode(show) {
   if (!hasCatalog(show)) return true;
-  return availableCatalogEpisodes(show).some((episode) => !isEpisodeWatched(show, episode));
+  return remainingAvailableEpisodes(show).length > 0;
 }
 
 function isEndedShow(show) {
   const status = normalizeText(show.status);
-  return ["ended", "finalizada", "concluida", "cancelled", "canceled"].some((value) => status.includes(value));
+  const endedAt = String(show.ended || "").slice(0, 10);
+  const endedByDate = /^\d{4}-\d{2}-\d{2}$/.test(endedAt) && endedAt <= new Date().toISOString().slice(0, 10);
+  return endedByDate || ["ended", "finalizada", "concluida", "cancelled", "canceled"].some((value) => status.includes(value));
+}
+
+function showTrackingStatus(show) {
+  const watched = watchedCount(show);
+  if (!hasCatalog(show) || regularCatalogEpisodes(show).length === 0) {
+    return watched
+      ? { key: "unknown", label: "Sem catálogo", tone: "", description: "Atualize os episódios para calcular a situação." }
+      : { key: "not-started", label: "Não iniciada", tone: "", description: "Nenhum episódio assistido." };
+  }
+
+  const remaining = remainingAvailableEpisodes(show);
+  const future = futureCatalogEpisodes(show);
+  if (isEndedShow(show) && remaining.length === 0) {
+    return { key: "completed", label: "Concluída", tone: "teal", description: "Todos os episódios da série encerrada foram assistidos." };
+  }
+  if (!isEndedShow(show) && remaining.length === 0 && future.length > 0) {
+    return {
+      key: "waiting",
+      label: `Aguardando · ${formatDate(future[0].airdate)}`,
+      tone: "gold",
+      description: "Você está em dia e o próximo episódio já tem data.",
+    };
+  }
+  if (!isEndedShow(show) && remaining.length === 0 && watched > 0) {
+    return { key: "up-to-date", label: "Em dia", tone: "teal", description: "Todos os episódios já lançados foram assistidos." };
+  }
+  if (remaining.length > 0 && watched > 0 && isForgottenShow(show)) {
+    return {
+      key: "forgotten",
+      label: `Esquecida · ${formatCount(remaining.length)}`,
+      tone: "red",
+      description: `Há episódios pendentes e nenhuma atividade há pelo menos ${FORGOTTEN_SHOW_DAYS} dias.`,
+    };
+  }
+  if (remaining.length > 0 && watched > 0) {
+    return {
+      key: "continuing",
+      label: `Continuar · ${formatCount(remaining.length)}`,
+      tone: "red",
+      description: `${formatCount(remaining.length)} episódios já lançados ainda não foram assistidos.`,
+    };
+  }
+  return { key: "not-started", label: "Não iniciada", tone: "", description: "Nenhum episódio assistido." };
+}
+
+function isForgottenShow(show) {
+  const lastWatched = lastWatchedTimestamp(show);
+  if (!lastWatched) return false;
+  return Date.now() - lastWatched >= FORGOTTEN_SHOW_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function renderShowTrackingBadge(status) {
+  return `<span class="badge ${status.tone}" title="${escapeAttr(status.description)}">${escapeHtml(status.label)}</span>`;
 }
 
 function nextEpisode(show) {

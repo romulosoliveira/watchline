@@ -559,6 +559,24 @@ select:focus-visible {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+.filter-count {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  margin-left: 6px;
+  padding: 0 5px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.segmented button.active .filter-count {
+  background: rgba(25, 194, 165, 0.18);
+  color: #c5fff5;
+}
+
 .detail {
   display: grid;
   grid-template-columns: 230px minmax(0, 1fr);
