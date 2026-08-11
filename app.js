@@ -1,7 +1,6 @@
 const DB_NAME = "personal-tv-tracker";
 const DB_VERSION = 1;
 const APP_NAME = "Watchline";
-const APP_INITIALS = "WL";
 const DATA_KEY = "tracker-data";
 const SETTINGS_KEY = "tvtracker-settings";
 const UI_STATE_KEY = "watchline-ui";
@@ -46,6 +45,7 @@ const state = {
     lastTitle: "",
   },
   driveSaving: false,
+  driveSaveQueued: false,
   token: null,
   tokenClient: null,
   settings: loadSettings(),
@@ -76,6 +76,12 @@ async function init() {
     window.setTimeout(() => startMoviePosterSync(), 3000);
     window.setInterval(() => startAutoCatalogSync(), 60 * 60 * 1000);
     window.setInterval(() => startMoviePosterSync(), 2 * 60 * 60 * 1000);
+    window.addEventListener("online", () => {
+      if (hasPendingDriveSave() && canAttemptDriveAutosave()) scheduleDriveAutosave(0);
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && hasPendingDriveSave() && canAttemptDriveAutosave()) scheduleDriveAutosave(0);
+    });
   } catch (error) {
     document.querySelector("#app").innerHTML = renderFatalError(error);
   }
@@ -105,6 +111,7 @@ function createEmptyData() {
 
 function render() {
   const focus = captureFocus();
+  const scrollPositions = captureScrollPositions();
   const app = document.querySelector("#app");
   app.innerHTML = `
     <div class="layout">
@@ -119,29 +126,35 @@ function render() {
   bindDynamicControls();
   refreshIcons();
   restoreFocus(focus);
+  restoreScrollPositions(scrollPositions);
 }
 
 function renderSidebar() {
-  const mediaStatus = renderMediaStatus();
   return `
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">${APP_INITIALS}</div>
+        <img class="brand-mark" src="./assets/watchline-192.png" alt="" />
         <div>
           <p class="brand-title">${APP_NAME}</p>
           <p class="brand-subtitle">${formatCount(state.data.stats.watchedEpisodes)} episódios salvos</p>
         </div>
       </div>
       <nav class="nav">${renderNavButtons()}</nav>
-      <div class="sidebar-footer">
-        <div class="status-line">
-          <span class="status-dot ${state.settings.driveFileId ? "ok" : ""}"></span>
-          <span>${state.settings.driveFileId ? "Drive configurado" : "Drive local pendente"}</span>
-        </div>
-        ${mediaStatus}
-        <p>${state.notice || "Dados salvos no navegador."}</p>
-      </div>
+      ${renderSidebarFooter()}
     </aside>
+  `;
+}
+
+function renderSidebarFooter() {
+  return `
+    <div class="sidebar-footer">
+      <div class="status-line">
+        <span class="status-dot ${state.settings.driveFileId ? "ok" : ""}"></span>
+        <span>${driveStatusLabel()}</span>
+      </div>
+      ${renderMediaStatus()}
+      <p>${state.notice || "Dados salvos no navegador."}</p>
+    </div>
   `;
 }
 
@@ -186,6 +199,48 @@ function renderMediaStatus() {
   return lines.join("");
 }
 
+function driveStatusLabel() {
+  if (state.driveSaving) return "Salvando no Drive...";
+  if (hasPendingDriveSave()) return "Alterações pendentes no Drive";
+  if (state.settings.driveFileId) return "Drive atualizado";
+  return "Drive local pendente";
+}
+
+function driveSyncSummary() {
+  if (hasPendingDriveSave()) return `Alterações locais aguardando envio desde ${formatDateTime(state.data.sync.pendingDriveSince)}.`;
+  if (state.data?.sync?.lastSavedToDriveAt) return `Último envio automático: ${formatDateTime(state.data.sync.lastSavedToDriveAt)}.`;
+  return `Arquivo principal: ${DRIVE_FILE_NAME}.`;
+}
+
+function renderDriveButtonContent() {
+  if (state.driveSaving) return `<i data-lucide="loader-circle" class="spin"></i><span>Salvando</span>`;
+  if (hasPendingDriveSave()) return `<i data-lucide="cloud-upload"></i><span>Pendente</span>`;
+  if (state.settings.driveFileId) return `<i data-lucide="cloud-check"></i><span>Drive</span>`;
+  return `<i data-lucide="cloud"></i><span>Drive</span>`;
+}
+
+function refreshBackgroundStatus() {
+  const footer = document.querySelector(".sidebar-footer");
+  if (footer) footer.outerHTML = renderSidebarFooter();
+  refreshIcons();
+}
+
+function refreshDriveStatus() {
+  document.querySelectorAll("[data-drive-button]").forEach((button) => {
+    button.className = `button ${state.settings.driveFileId ? "teal" : "primary"}`;
+    button.innerHTML = renderDriveButtonContent();
+  });
+  const syncStatus = document.querySelector("[data-drive-sync-status]");
+  if (syncStatus) syncStatus.textContent = driveStatusLabel();
+  const syncDot = document.querySelector("[data-drive-sync-dot]");
+  if (syncDot) syncDot.className = `status-dot ${state.driveSaving ? "ok pulse" : hasPendingDriveSave() ? "warn" : state.settings.driveFileId ? "ok" : "warn"}`;
+  const syncSummary = document.querySelector("[data-drive-sync-summary]");
+  if (syncSummary) syncSummary.textContent = driveSyncSummary();
+  const manualSave = document.querySelector("[data-manual-drive-save]");
+  if (manualSave) manualSave.disabled = state.driveSaving;
+  refreshIcons();
+}
+
 function renderMobileNav() {
   return `<nav class="mobile-nav">${renderNavButtons()}</nav>`;
 }
@@ -224,9 +279,8 @@ function renderTopbar() {
           <i data-lucide="download"></i>
           Exportar
         </button>
-        <button class="button ${state.settings.driveFileId ? "teal" : "primary"}" data-action="goto-sync">
-          <i data-lucide="${state.settings.driveFileId ? "cloud-check" : "cloud"}"></i>
-          Drive
+        <button class="button ${state.settings.driveFileId ? "teal" : "primary"}" data-action="goto-sync" data-drive-button>
+          ${renderDriveButtonContent()}
         </button>
       </div>
     </header>
@@ -317,7 +371,7 @@ function renderShelf(title, subtitle, shows, collapseId) {
         collapsed
           ? ""
           : shows.length
-            ? `<div class="scroller">${shows.map((show) => renderShowCard(show)).join("")}</div>`
+            ? `<div class="scroller" data-scroll-id="${escapeAttr(collapseId || title)}">${shows.map((show) => renderShowCard(show)).join("")}</div>`
             : `<div class="empty">Nada por aqui ainda.</div>`
       }
     </section>
@@ -351,7 +405,7 @@ function renderShowsView() {
       <label class="search-box">
         <span class="sr-only">Buscar série</span>
         <i data-lucide="search"></i>
-        <input class="input" data-input="search" value="${escapeAttr(state.search)}" placeholder="Buscar série" />
+        <input class="input" type="search" data-input="search" value="${escapeAttr(state.search)}" autocomplete="off" enterkeyhint="search" placeholder="Buscar série" />
       </label>
       <div class="segmented" role="tablist">
         ${renderFilterButton("show", "active", "Ativas")}
@@ -362,12 +416,14 @@ function renderShowsView() {
       </div>
     </div>
     ${renderLibraryControls("show")}
-    ${
-      shows.length
-        ? `<div class="grid">${shows.map((show) => renderShowCard(show)).join("")}</div>`
-        : `<div class="empty">Nenhuma série encontrada.</div>`
-    }
+    <div data-library-results="show" aria-live="polite">${renderShowLibraryResults(shows)}</div>
   `;
+}
+
+function renderShowLibraryResults(shows = filterShows()) {
+  return shows.length
+    ? `<div class="grid">${shows.map((show) => renderShowCard(show)).join("")}</div>`
+    : `<div class="empty">Nenhuma série encontrada.</div>`;
 }
 
 function renderAddShowView() {
@@ -654,7 +710,7 @@ function renderMoviesView() {
       <label class="search-box">
         <span class="sr-only">Buscar filme</span>
         <i data-lucide="search"></i>
-        <input class="input" data-input="search" value="${escapeAttr(state.search)}" placeholder="Buscar filme" />
+        <input class="input" type="search" data-input="search" value="${escapeAttr(state.search)}" autocomplete="off" enterkeyhint="search" placeholder="Buscar filme" />
       </label>
       <div class="segmented" role="tablist">
         ${renderFilterButton("movie", "watched", "Vistos")}
@@ -664,12 +720,14 @@ function renderMoviesView() {
       </div>
     </div>
     ${renderLibraryControls("movie")}
-    ${
-      movies.length
-        ? `<div class="grid">${movies.map((movie) => renderMovieCard(movie)).join("")}</div>`
-        : `<div class="empty">Nenhum filme encontrado.</div>`
-    }
+    <div data-library-results="movie" aria-live="polite">${renderMovieLibraryResults(movies)}</div>
   `;
+}
+
+function renderMovieLibraryResults(movies = filterMovies()) {
+  return movies.length
+    ? `<div class="grid">${movies.map((movie) => renderMovieCard(movie)).join("")}</div>`
+    : `<div class="empty">Nenhum filme encontrado.</div>`;
 }
 
 function renderMovieCard(movie) {
@@ -903,18 +961,19 @@ function renderSyncView() {
       <div class="settings-block">
         <h3>Google Drive</h3>
         <div class="status-line">
-          <span class="status-dot ${hasDrive ? "ok" : "warn"}"></span>
-          <span>${hasDrive ? `Arquivo: ${DRIVE_FILE_NAME}` : "Arquivo ainda não conectado"}</span>
+          <span class="status-dot ${state.driveSaving ? "ok pulse" : hasPendingDriveSave() ? "warn" : hasDrive ? "ok" : "warn"}" data-drive-sync-dot></span>
+          <span data-drive-sync-status>${hasDrive ? driveStatusLabel() : "Arquivo ainda não conectado"}</span>
         </div>
         <div class="settings-row">
-          <input class="input" data-input="google-client-id" value="${escapeAttr(clientId)}" placeholder="Google OAuth Client ID" />
+          <input class="input" data-input="google-client-id" value="${escapeAttr(clientId)}" autocomplete="off" spellcheck="false" inputmode="url" placeholder="Google OAuth Client ID" />
           <button class="button primary" data-action="connect-drive">
             <i data-lucide="key-round"></i>
             Conectar
           </button>
         </div>
+        ${clientId ? `<p class="card-meta">Client ID salvo: ${escapeHtml(summarizeClientId(clientId))}</p>` : ""}
         <div class="detail-actions">
-          <button class="button teal" data-action="save-drive" ${state.driveSaving ? "disabled" : ""}>
+          <button class="button teal" data-action="save-drive" data-manual-drive-save ${state.driveSaving ? "disabled" : ""}>
             <i data-lucide="cloud-upload"></i>
             Salvar no Drive
           </button>
@@ -927,6 +986,7 @@ function renderSyncView() {
             Baixar JSON
           </button>
         </div>
+        ${hasDrive ? `<p class="card-meta" data-drive-sync-summary>${driveSyncSummary()}</p>` : ""}
       </div>
       <div class="settings-block">
         <h3>Capas de filmes</h3>
@@ -962,14 +1022,32 @@ function renderSyncView() {
   `;
 }
 
-function bindDynamicControls() {
-  document.querySelectorAll("[data-action]").forEach((node) => {
+let librarySearchTimer = null;
+
+function bindActionControls(root = document) {
+  root.querySelectorAll("[data-action]").forEach((node) => {
     node.addEventListener("click", handleAction);
   });
+}
+
+function bindDynamicControls() {
+  bindActionControls();
   document.querySelectorAll("[data-input='search']").forEach((node) => {
     node.addEventListener("input", (event) => {
       state.search = event.target.value;
-      render();
+      scheduleLibrarySearchRefresh();
+    });
+    node.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        refreshLibrarySearchResults();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.target.value = "";
+        state.search = "";
+        refreshLibrarySearchResults();
+      }
     });
   });
   document.querySelectorAll("[data-input='add-show-query']").forEach((node) => {
@@ -1007,6 +1085,59 @@ function bindDynamicControls() {
       if (event.target.dataset.select === "movie-sort") state.movieSort = value;
       render();
     });
+  });
+  bindScrollerGuards();
+}
+
+function scheduleLibrarySearchRefresh(delay = 280) {
+  window.clearTimeout(librarySearchTimer);
+  librarySearchTimer = window.setTimeout(refreshLibrarySearchResults, delay);
+}
+
+function refreshLibrarySearchResults() {
+  window.clearTimeout(librarySearchTimer);
+  const kind = state.view === "shows" ? "show" : state.view === "movies" ? "movie" : null;
+  if (!kind) return;
+  const container = document.querySelector(`[data-library-results='${kind}']`);
+  if (!container) return;
+  container.innerHTML = kind === "show" ? renderShowLibraryResults() : renderMovieLibraryResults();
+  bindActionControls(container);
+  refreshIcons();
+}
+
+function bindScrollerGuards() {
+  document.querySelectorAll(".scroller").forEach((scroller) => {
+    let startX = 0;
+    let startY = 0;
+    let dragged = false;
+    scroller.addEventListener("pointerdown", (event) => {
+      startX = event.clientX;
+      startY = event.clientY;
+      dragged = false;
+    });
+    scroller.addEventListener(
+      "pointermove",
+      (event) => {
+        if (Math.abs(event.clientX - startX) > 8 && Math.abs(event.clientX - startX) > Math.abs(event.clientY - startY)) {
+          dragged = true;
+        }
+      },
+      { passive: true },
+    );
+    scroller.addEventListener("pointerup", () => {
+      if (dragged) scroller.dataset.suppressClickUntil = String(Date.now() + 300);
+    });
+    scroller.addEventListener(
+      "click",
+      (event) => {
+        if (Date.now() < Number(scroller.dataset.suppressClickUntil || 0)) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+        }
+      },
+      true,
+    );
   });
 }
 
@@ -1137,6 +1268,8 @@ async function handleAction(event) {
     return;
   }
   if (action === "reset-seed") {
+    const confirmed = window.confirm("Restaurar a importação original neste aparelho? As alterações locais atuais serão substituídas, mas o arquivo do Drive não será alterado automaticamente.");
+    if (!confirmed) return;
     await resetToSeed();
     return;
   }
@@ -1241,7 +1374,7 @@ function startAutoCatalogSync({ force = false } = {}) {
   if (!candidates.length) {
     return;
   }
-  render();
+  refreshBackgroundStatus();
   runCatalogQueue(candidates);
 }
 
@@ -1266,7 +1399,7 @@ function startMoviePosterSync({ force = false } = {}) {
     lastTitle: "",
   };
   if (!candidates.length) return;
-  render();
+  refreshBackgroundStatus();
   runMoviePosterQueue(candidates);
 }
 
@@ -1302,7 +1435,7 @@ async function runMoviePosterQueue(candidates) {
   for (const movie of candidates) {
     state.posterSync.index += 1;
     state.posterSync.lastTitle = movie.title;
-    render();
+    refreshBackgroundStatus();
     try {
       const poster = await fetchMoviePoster(movie);
       movie.posterUpdatedAt = new Date().toISOString();
@@ -1440,7 +1573,7 @@ async function runCatalogQueue(candidates) {
   for (const show of candidates) {
     state.catalogSync.index += 1;
     state.catalogSync.lastTitle = show.title;
-    render();
+    refreshBackgroundStatus();
     try {
       await updateCatalogForShow(show);
       state.catalogSync.updated += 1;
@@ -1791,6 +1924,7 @@ async function toggleShowField(id, field) {
   const show = getShows().find((item) => item.id === id);
   if (!show || !(field in show)) return;
   show[field] = !show[field];
+  show.updatedAt = new Date().toISOString();
   addLocalChange("show:update", { id, field, value: show[field] });
   await persistAndRender(`Série atualizada: ${show.title}`);
 }
@@ -1824,6 +1958,7 @@ function addEpisode(show, season, episode, options = {}) {
     isSpecial: season === 0,
   });
   show.episodesSeenCount = watchedCount(show);
+  show.updatedAt = new Date().toISOString();
   addLocalChange("episode:watched", { showId: show.id, season, episode });
 }
 
@@ -1833,6 +1968,8 @@ async function toggleEpisode(id, season, episode) {
   const catalogEpisode = findCatalogEpisode(show, season, episode);
   if (isEpisodeWatched(show, { season, number: episode })) {
     show.watchedEpisodes = (show.watchedEpisodes || []).filter((item) => Number(item.season || 0) !== season || Number(item.number || 0) !== episode);
+    show.episodesSeenCount = watchedCount(show);
+    show.updatedAt = new Date().toISOString();
     addLocalChange("episode:unwatched", { showId: show.id, season, episode });
     await persistAndRender(`Desmarcado S${season}E${episode}: ${show.title}`);
   } else {
@@ -1844,8 +1981,9 @@ async function toggleEpisode(id, season, episode) {
 async function unwatchEpisode(id, season, episode) {
   const show = getShows().find((item) => item.id === id);
   if (!show) return;
-  show.watchedEpisodes = (show.watchedEpisodes || []).filter((item) => item.season !== season || item.number !== episode);
+  show.watchedEpisodes = (show.watchedEpisodes || []).filter((item) => Number(item.season || 0) !== season || Number(item.number || 0) !== episode);
   show.episodesSeenCount = watchedCount(show);
+  show.updatedAt = new Date().toISOString();
   addLocalChange("episode:unwatched", { showId: show.id, season, episode });
   await persistAndRender(`Removido S${season}E${episode}: ${show.title}`);
 }
@@ -1854,9 +1992,10 @@ async function toggleMovieField(id, field) {
   const movie = getMovies().find((item) => item.id === id);
   if (!movie || !(field in movie)) return;
   movie[field] = !movie[field];
-  if (field === "watched" && movie.watched) {
-    movie.watchedAt = new Date().toISOString();
+  if (field === "watched") {
+    movie.watchedAt = movie.watched ? new Date().toISOString() : null;
   }
+  movie.updatedAt = new Date().toISOString();
   addLocalChange("movie:update", { id, field, value: movie[field] });
   await persistAndRender(`Filme atualizado: ${movie.title}`);
 }
@@ -1868,26 +2007,46 @@ async function persistAndRender(message) {
 }
 
 async function persist(reason, options = {}) {
-  state.data.updatedAt = new Date().toISOString();
+  const updatedAt = new Date().toISOString();
+  state.data.updatedAt = updatedAt;
   state.data.stats = recomputeStats(state.data);
+  if (options.autosave && hasDriveConfiguration()) {
+    state.data.sync = state.data.sync || {};
+    state.data.sync.pendingDriveSince = state.data.sync.pendingDriveSince || updatedAt;
+  }
   await idbSet(DATA_KEY, state.data);
-  if (options.autosave && state.settings.driveFileId && state.token) {
+  if (options.autosave && canAttemptDriveAutosave()) {
     scheduleDriveAutosave();
   }
 }
 
 let autosaveTimer = null;
-function scheduleDriveAutosave() {
+function hasDriveConfiguration() {
+  return Boolean(state.settings.googleClientId && (state.settings.driveFileId || state.token));
+}
+
+function hasPendingDriveSave() {
+  return Boolean(state.data?.sync?.pendingDriveSince && hasDriveConfiguration());
+}
+
+function canAttemptDriveAutosave() {
+  return Boolean(state.token && Date.now() < state.token.expiresAt - 60_000);
+}
+
+function scheduleDriveAutosave(delay = 850) {
+  if (!canAttemptDriveAutosave()) return;
   window.clearTimeout(autosaveTimer);
   autosaveTimer = window.setTimeout(() => {
     saveToDrive({ interactive: false }).catch((error) => {
       state.notice = `Drive pendente: ${error.message}`;
-      render();
+      refreshBackgroundStatus();
+      refreshDriveStatus();
     });
-  }, 1200);
+  }, delay);
 }
 
 async function connectDrive() {
+  normalizeGoogleClientIdSetting();
   if (!state.settings.googleClientId) {
     state.notice = "Informe o Google OAuth Client ID.";
     render();
@@ -1897,6 +2056,7 @@ async function connectDrive() {
     await ensureDriveToken({ interactive: true });
     state.notice = "Drive conectado.";
     render();
+    if (hasPendingDriveSave()) scheduleDriveAutosave(0);
   } catch (error) {
     state.notice = `Drive: ${error.message}`;
     render();
@@ -1904,16 +2064,33 @@ async function connectDrive() {
 }
 
 async function saveToDrive({ interactive }) {
+  normalizeGoogleClientIdSetting();
   if (!state.settings.googleClientId) {
     state.notice = "Informe o Google OAuth Client ID.";
     render();
     return;
   }
+  if (state.driveSaving) {
+    state.driveSaveQueued = true;
+    return;
+  }
   state.driveSaving = true;
-  render();
+  refreshDriveStatus();
+  let saveSucceeded = false;
+  let snapshotUpdatedAt = "";
   try {
     await ensureDriveToken({ interactive });
-    const body = JSON.stringify(state.data);
+    snapshotUpdatedAt = state.data.updatedAt || "";
+    const savedAt = new Date().toISOString();
+    const uploadData = {
+      ...state.data,
+      sync: {
+        ...(state.data.sync || {}),
+        lastSavedToDriveAt: savedAt,
+        pendingDriveSince: null,
+      },
+    };
+    const body = JSON.stringify(uploadData);
     let fileId = state.settings.driveFileId;
     if (!fileId) {
       const found = await findDriveFile();
@@ -1923,19 +2100,33 @@ async function saveToDrive({ interactive }) {
     state.settings.driveFileId = file.id;
     state.settings.driveModifiedTime = file.modifiedTime || new Date().toISOString();
     state.data.sync = state.data.sync || {};
-    state.data.sync.lastSavedToDriveAt = new Date().toISOString();
+    state.data.sync.lastSavedToDriveAt = savedAt;
+    if ((state.data.updatedAt || "") === snapshotUpdatedAt) {
+      state.data.sync.pendingDriveSince = null;
+    }
     saveSettings();
     await idbSet(DATA_KEY, state.data);
     state.notice = "Salvo no Google Drive.";
+    saveSucceeded = true;
   } catch (error) {
     state.notice = `Drive: ${error.message}`;
   } finally {
     state.driveSaving = false;
-    render();
+    const queued = state.driveSaveQueued;
+    state.driveSaveQueued = false;
+    if (interactive) render();
+    else {
+      refreshBackgroundStatus();
+      refreshDriveStatus();
+    }
+    if (saveSucceeded && canAttemptDriveAutosave() && (queued || hasPendingDriveSave())) {
+      scheduleDriveAutosave(250);
+    }
   }
 }
 
 async function loadFromDrive() {
+  normalizeGoogleClientIdSetting();
   if (!state.settings.googleClientId) {
     state.notice = "Informe o Google OAuth Client ID.";
     render();
@@ -1969,6 +2160,7 @@ async function loadFromDrive() {
 }
 
 async function ensureDriveToken({ interactive }) {
+  normalizeGoogleClientIdSetting();
   await waitForGoogleIdentity();
   if (!state.tokenClient) {
     state.tokenClient = google.accounts.oauth2.initTokenClient({
@@ -2325,6 +2517,30 @@ function saveSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
 }
 
+function normalizeGoogleClientIdSetting() {
+  const normalized = extractGoogleClientId(state.settings.googleClientId);
+  if (normalized !== (state.settings.googleClientId || "")) {
+    state.settings.googleClientId = normalized;
+    saveSettings();
+  }
+  return normalized;
+}
+
+function extractGoogleClientId(value) {
+  const text = String(value || "");
+  const match = text.match(/\b\d+-[a-z0-9-]+\.apps\.googleusercontent\.com\b/i);
+  return match ? match[0] : text.trim();
+}
+
+function summarizeClientId(value) {
+  const id = extractGoogleClientId(value);
+  const match = id.match(/^(\d+)-(.+)\.apps\.googleusercontent\.com$/);
+  if (!match) return id || "não informado";
+  const prefix = `${match[1]}-`;
+  const body = match[2];
+  return `${prefix}${body.slice(0, 6)}...${body.slice(-5)}.apps.googleusercontent.com`;
+}
+
 function loadUiState() {
   try {
     const saved = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}");
@@ -2492,7 +2708,7 @@ function coverVars(title) {
 function renderFatalError(error) {
   return `
     <main class="loading-screen">
-      <div class="loading-mark">${APP_INITIALS}</div>
+      <img class="loading-mark" src="./assets/watchline-192.png" alt="Watchline" />
       <p>${escapeHtml(error.message)}</p>
     </main>
   `;
@@ -2508,6 +2724,24 @@ function renderCover(title, image) {
       ${image ? "" : `<span class="cover-initial">${initials(title)}</span>`}
     </div>
   `;
+}
+
+function captureScrollPositions() {
+  const positions = {};
+  document.querySelectorAll("[data-scroll-id]").forEach((node) => {
+    positions[node.dataset.scrollId] = node.scrollLeft;
+  });
+  return positions;
+}
+
+function restoreScrollPositions(positions) {
+  if (!positions || !Object.keys(positions).length) return;
+  window.requestAnimationFrame(() => {
+    document.querySelectorAll("[data-scroll-id]").forEach((node) => {
+      const scrollLeft = positions[node.dataset.scrollId];
+      if (Number.isFinite(scrollLeft)) node.scrollLeft = scrollLeft;
+    });
+  });
 }
 
 function captureFocus() {
