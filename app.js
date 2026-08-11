@@ -402,7 +402,7 @@ function renderShowsView() {
         Atualizar episódios online
       </button>
     </div>
-    <div class="search-row">
+    <div class="search-row show-search-row">
       <label class="search-box">
         <span class="sr-only">Buscar série</span>
         <i data-lucide="search"></i>
