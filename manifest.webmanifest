@@ -11,13 +11,13 @@
   "categories": ["entertainment", "productivity"],
   "icons": [
     {
-      "src": "./assets/watchline-192.png",
+      "src": "./assets/watchline-play-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "./assets/watchline-512.png",
+      "src": "./assets/watchline-play-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
