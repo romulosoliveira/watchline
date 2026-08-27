@@ -1,34 +1,57 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#101414" />
+    <meta name="theme-color" content="#090c10" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Watchline" />
-    <title>Watchline</title>
-    <link rel="icon" type="image/png" href="./assets/watchline-192.png" />
-    <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="./assets/watchline-192.png" />
-    <link rel="stylesheet" href="./styles.css" />
+    <title>Watchline v1.1.0</title>
+    <link rel="icon" type="image/png" href="./assets/watchline-play-192.png?v=11" />
+    <link rel="manifest" href="./manifest.webmanifest?v=11" />
+    <link rel="apple-touch-icon" href="./assets/watchline-play-192.png?v=11" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css?v=11" />
   </head>
   <body>
     <div id="app" class="app-shell">
       <main class="loading-screen">
-        <img class="loading-mark" src="./assets/watchline-192.png" alt="Watchline" />
-        <p>Carregando biblioteca...</p>
+        <div class="loading-mark-wrapper">
+          <img class="loading-mark" src="./assets/watchline-play-192.png?v=11" alt="Watchline" />
+          <div class="loading-spinner-ring"></div>
+        </div>
+        <p class="loading-text">Loading Watchline library...</p>
       </main>
     </div>
+    <div id="command-palette-container"></div>
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
       if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
-        window.addEventListener("load", () => {
-          navigator.serviceWorker.register("./sw.js").catch(() => {});
+        let reloadingForUpdate = false;
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          if (reloadingForUpdate) return;
+          reloadingForUpdate = true;
+          window.location.reload();
+        });
+
+        window.addEventListener("load", async () => {
+          try {
+            const registration = await navigator.serviceWorker.register("./sw.js?v=11", { updateViaCache: "none" });
+            await registration.update();
+          } catch (_) {}
+        });
+
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState !== "visible") return;
+          navigator.serviceWorker.getRegistration("./").then((registration) => registration?.update()).catch(() => {});
         });
       }
     </script>
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./app.js?v=11"></script>
   </body>
 </html>

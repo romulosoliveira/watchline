@@ -1,6 +1,7 @@
 const DB_NAME = "personal-tv-tracker";
 const DB_VERSION = 1;
 const APP_NAME = "Watchline";
+const APP_VERSION = "v1.1.0";
 const DATA_KEY = "tracker-data";
 const SETTINGS_KEY = "tvtracker-settings";
 const UI_STATE_KEY = "watchline-ui";
@@ -9,6 +10,10 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const TVMAZE_API = "https://api.tvmaze.com";
 const TMDB_API = "https://api.themoviedb.org/3";
 const TMDB_IMAGE = "https://image.tmdb.org/t/p/w500";
+const TMDB_LANGUAGE = "en-US";
+const SHOW_METADATA_LANGUAGE_VERSION = "en-US-shows-v1";
+const MOVIE_METADATA_LANGUAGE_VERSION = "en-US-movies-v2";
+const FORGOTTEN_SHOW_DAYS = 90;
 
 const state = {
   data: null,
@@ -27,6 +32,8 @@ const state = {
   episodeFilter: "all",
   busy: false,
   notice: "",
+  commandPaletteOpen: false,
+  commandQuery: "",
   catalogLoading: false,
   catalogSync: {
     running: false,
@@ -53,10 +60,10 @@ const state = {
 };
 
 const navItems = [
-  ["home", "Início", "layout-dashboard"],
-  ["shows", "Séries", "monitor-play"],
-  ["movies", "Filmes", "clapperboard"],
-  ["lists", "Listas", "list"],
+  ["home", "Home", "layout-dashboard"],
+  ["shows", "Shows", "tv"],
+  ["movies", "Movies", "clapperboard"],
+  ["lists", "Lists", "bookmark"],
   ["sync", "Drive", "cloud"],
 ];
 
@@ -64,7 +71,7 @@ init();
 
 async function init() {
   try {
-    document.title = APP_NAME;
+    document.title = `${APP_NAME} ${APP_VERSION}`;
     const stored = await idbGet(DATA_KEY);
     state.data = stored || (await loadSeedData());
     state.data.stats = recomputeStats(state.data);
@@ -72,6 +79,7 @@ async function init() {
       await persist("import-seed", { autosave: false });
     }
     render();
+    bindGlobalKeyboardShortcuts();
     window.setTimeout(() => startAutoCatalogSync(), 900);
     window.setTimeout(() => startMoviePosterSync(), 3000);
     window.setInterval(() => startAutoCatalogSync(), 60 * 60 * 1000);
@@ -87,6 +95,34 @@ async function init() {
   }
 }
 
+function bindGlobalKeyboardShortcuts() {
+  window.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      toggleCommandPalette();
+      return;
+    }
+    if (event.key === "Escape" && state.commandPaletteOpen) {
+      event.preventDefault();
+      closeCommandPalette();
+      return;
+    }
+    if (
+      event.key === "/" &&
+      !state.commandPaletteOpen &&
+      !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)
+    ) {
+      event.preventDefault();
+      const searchBox = document.querySelector("[data-input='search']");
+      if (searchBox) {
+        searchBox.focus();
+      } else {
+        toggleCommandPalette();
+      }
+    }
+  });
+}
+
 async function loadSeedData() {
   const response = await fetch("./data/tvtime-seed.json", { cache: "no-store" });
   if (!response.ok) {
@@ -99,6 +135,7 @@ function createEmptyData() {
   return {
     schemaVersion: 1,
     appName: APP_NAME,
+    version: APP_VERSION,
     exportedAt: new Date().toISOString(),
     source: "empty",
     shows: [],
@@ -127,16 +164,23 @@ function render() {
   refreshIcons();
   restoreFocus(focus);
   restoreScrollPositions(scrollPositions);
+  renderCommandPalette();
 }
 
 function renderSidebar() {
+  const stats = state.data?.stats || {};
   return `
     <aside class="sidebar">
       <div class="brand">
-        <img class="brand-mark" src="./assets/watchline-192.png" alt="" />
-        <div>
-          <p class="brand-title">${APP_NAME}</p>
-          <p class="brand-subtitle">${formatCount(state.data.stats.watchedEpisodes)} episódios salvos</p>
+        <div class="brand-mark-wrapper">
+          <img class="brand-mark" src="./assets/watchline-play-192.png?v=11" alt="Watchline" />
+        </div>
+        <div class="brand-info">
+          <div class="brand-header-row">
+            <span class="brand-title">${APP_NAME}</span>
+            <span class="version-badge">${APP_VERSION}</span>
+          </div>
+          <span class="brand-subtitle">${formatCount(stats.watchedEpisodes || 0)} episodes tracked</span>
         </div>
       </div>
       <nav class="nav">${renderNavButtons()}</nav>
@@ -148,12 +192,14 @@ function renderSidebar() {
 function renderSidebarFooter() {
   return `
     <div class="sidebar-footer">
-      <div class="status-line">
-        <span class="status-dot ${state.settings.driveFileId ? "ok" : ""}"></span>
-        <span>${driveStatusLabel()}</span>
+      <div class="sidebar-status-card">
+        <div class="status-line">
+          <span class="status-dot ${state.settings.driveFileId ? "ok" : "warn"}"></span>
+          <span>${driveStatusLabel()}</span>
+        </div>
+        ${renderMediaStatus()}
       </div>
-      ${renderMediaStatus()}
-      <p>${state.notice || "Dados salvos no navegador."}</p>
+      <p class="sidebar-small">${state.notice || "Local offline-first storage active."}</p>
     </div>
   `;
 }
@@ -166,16 +212,16 @@ function renderMediaStatus() {
     lines.push(`
       <div class="status-line">
         <span class="status-dot ok pulse"></span>
-        <span>Episódios online ${catalog.index}/${catalog.total}</span>
+        <span>Online episodes ${catalog.index}/${catalog.total}</span>
       </div>
-      <p class="sidebar-small">${escapeHtml(catalog.lastTitle || "Atualizando catálogos...")}</p>
+      <p class="sidebar-small">${escapeHtml(catalog.lastTitle || "Updating catalogs...")}</p>
     `);
   } else {
     const cataloged = state.data?.stats?.catalogedShows || 0;
     lines.push(`
       <div class="status-line">
         <span class="status-dot ${cataloged ? "ok" : "warn"}"></span>
-        <span>${formatCount(cataloged)} séries com episódios online</span>
+        <span>${formatCount(cataloged)} shows synced</span>
       </div>
     `);
   }
@@ -183,38 +229,30 @@ function renderMediaStatus() {
     lines.push(`
       <div class="status-line">
         <span class="status-dot ok pulse"></span>
-        <span>Capas de filmes ${posters.index}/${posters.total}</span>
+        <span>Movie metadata ${posters.index}/${posters.total}</span>
       </div>
-      <p class="sidebar-small">${escapeHtml(posters.lastTitle || "Buscando posters...")}</p>
-    `);
-  } else {
-    const moviePosters = state.data?.stats?.moviePosters || 0;
-    lines.push(`
-      <div class="status-line">
-        <span class="status-dot ${moviePosters ? "ok" : "warn"}"></span>
-        <span>${formatCount(moviePosters)} filmes com capa</span>
-      </div>
+      <p class="sidebar-small">${escapeHtml(posters.lastTitle || "Fetching metadata...")}</p>
     `);
   }
   return lines.join("");
 }
 
 function driveStatusLabel() {
-  if (state.driveSaving) return "Salvando no Drive...";
-  if (hasPendingDriveSave()) return "Alterações pendentes no Drive";
-  if (state.settings.driveFileId) return "Drive atualizado";
-  return "Drive local pendente";
+  if (state.driveSaving) return "Saving to Drive...";
+  if (hasPendingDriveSave()) return "Pending Drive upload";
+  if (state.settings.driveFileId) return "Drive connected & synced";
+  return "Drive connection pending";
 }
 
 function driveSyncSummary() {
-  if (hasPendingDriveSave()) return `Alterações locais aguardando envio desde ${formatDateTime(state.data.sync.pendingDriveSince)}.`;
-  if (state.data?.sync?.lastSavedToDriveAt) return `Último envio automático: ${formatDateTime(state.data.sync.lastSavedToDriveAt)}.`;
-  return `Arquivo principal: ${DRIVE_FILE_NAME}.`;
+  if (hasPendingDriveSave()) return `Local changes have been waiting to upload since ${formatDateTime(state.data.sync.pendingDriveSince)}.`;
+  if (state.data?.sync?.lastSavedToDriveAt) return `Last automatic upload: ${formatDateTime(state.data.sync.lastSavedToDriveAt)}.`;
+  return `Primary file: ${DRIVE_FILE_NAME}.`;
 }
 
 function renderDriveButtonContent() {
-  if (state.driveSaving) return `<i data-lucide="loader-circle" class="spin"></i><span>Salvando</span>`;
-  if (hasPendingDriveSave()) return `<i data-lucide="cloud-upload"></i><span>Pendente</span>`;
+  if (state.driveSaving) return `<i data-lucide="loader-circle" class="spin"></i><span>Saving</span>`;
+  if (hasPendingDriveSave()) return `<i data-lucide="cloud-upload"></i><span>Pending</span>`;
   if (state.settings.driveFileId) return `<i data-lucide="cloud-check"></i><span>Drive</span>`;
   return `<i data-lucide="cloud"></i><span>Drive</span>`;
 }
@@ -246,41 +284,51 @@ function renderMobileNav() {
 }
 
 function renderNavButtons() {
+  const stats = state.data?.stats || {};
   return navItems
-    .map(
-      ([view, label, icon]) => `
+    .map(([view, label, icon]) => {
+      let count = null;
+      if (view === "shows") count = stats.followedShows || 0;
+      if (view === "movies") count = stats.watchedMovies || 0;
+      return `
         <button class="nav-button ${state.view === view ? "active" : ""}" data-action="view" data-view="${view}" title="${label}">
           <i data-lucide="${icon}"></i>
           <span>${label}</span>
+          ${count !== null ? `<span class="nav-badge">${formatCount(count)}</span>` : ""}
         </button>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
 function renderTopbar() {
   const titles = {
-    home: ["Início", "Sua fila pessoal e o estado da biblioteca"],
-    shows: ["Séries", "Progresso, favoritos e ver depois"],
-    "add-show": ["Adicionar série", "Buscar temporadas e episódios em fonte pública"],
-    movies: ["Filmes", "Histórico e watchlist importados"],
-    lists: ["Listas", "Favoritos e coleções pessoais"],
-    sync: ["Google Drive", "Arquivo principal do tracker"],
+    home: [`Home`, "Your personal watch queue and entertainment overview"],
+    shows: ["Shows", "Track seasons, episodes, and upcoming releases"],
+    "add-show": ["Add show", "Search and import series from public sources"],
+    movies: ["Movies", "Imported history, ratings, and watchlist"],
+    lists: ["Lists", "Favorite collections and custom selections"],
+    sync: ["Cloud & Storage", "Google Drive sync and data management"],
   };
   const [title, subtitle] = titles[state.view] || titles.home;
   return `
     <header class="topbar">
-      <div>
+      <div class="page-title-group">
         <h1 class="page-title">${title}</h1>
         <p class="page-kicker">${subtitle}</p>
       </div>
       <div class="toolbar">
-        <button class="button ghost" data-action="export-json">
-          <i data-lucide="download"></i>
-          Exportar
+        <button class="cmd-k-trigger" data-action="open-cmd-palette" title="Quick Search (Ctrl + K)">
+          <i data-lucide="search"></i>
+          <span>Quick search...</span>
+          <span class="cmd-k-badge">Ctrl K</span>
         </button>
-        <button class="button ${state.settings.driveFileId ? "teal" : "primary"}" data-action="goto-sync" data-drive-button>
+        <button class="button ${state.settings.driveFileId ? "teal" : "primary"}" data-action="goto-sync" data-drive-button title="Google Drive status">
           ${renderDriveButtonContent()}
+        </button>
+        <button class="button ghost sm" data-action="export-json" title="Export local backup as JSON">
+          <i data-lucide="download"></i>
+          Export
         </button>
       </div>
     </header>
@@ -301,35 +349,46 @@ function renderView() {
 function renderHomeView() {
   const stats = state.data.stats;
   const continueShows = getShows()
-    .filter((show) => show.followed && !show.archived && watchedCount(show) > 0)
+    .filter((show) => show.followed && !show.archived && watchedCount(show) > 0 && hasNextAvailableEpisode(show))
     .sort((a, b) => lastWatchedTimestamp(b) - lastWatchedTimestamp(a))
-    .slice(0, 14);
+    .slice(0, 16);
   const laterShows = getShows()
     .filter((show) => show.forLater)
     .sort((a, b) => a.title.localeCompare(b.title))
-    .slice(0, 14);
+    .slice(0, 16);
   const favoriteShows = getShows()
     .filter((show) => show.favorite)
     .sort((a, b) => a.title.localeCompare(b.title))
-    .slice(0, 14);
+    .slice(0, 16);
+  const watchlistMovies = getMovies()
+    .filter((movie) => movie.watchlist)
+    .slice(0, 16);
 
   return `
     ${renderStatsSection(stats)}
-    ${renderShelf("Continuar", "Ordenado pelo último episódio registrado", continueShows, "home:continue")}
-    ${renderShelf("Ver Depois", "Séries marcadas como for later", laterShows, "home:later")}
-    ${renderShelf("Favoritas", "Listas recuperadas do TV Time", favoriteShows, "home:favorites")}
+    ${renderShelf("Continue Watching", "Shows with released episodes ready to watch", continueShows, "home:continue")}
+    ${renderShelf("Watch Later", "Saved shows for future viewing", laterShows, "home:later")}
+    ${renderShelf("Favorites", "Top favorites and prized collections", favoriteShows, "home:favorites")}
+    ${watchlistMovies.length ? renderMovieShelf("Movie Watchlist", "Movies queued up to watch", watchlistMovies, "home:movies-watchlist") : ""}
   `;
 }
 
 function renderStatsSection(stats) {
   const collapseId = "home:stats";
   const collapsed = isCollapsed(collapseId);
+  
+  // Calculate approximate watch time (avg 42 min / ep, plus movie runtimes)
+  const totalEpisodeMinutes = (stats.watchedEpisodes || 0) * 42;
+  const totalDays = Math.floor(totalEpisodeMinutes / (60 * 24));
+  const totalHours = Math.floor((totalEpisodeMinutes % (60 * 24)) / 60);
+  const watchTimeString = `${totalDays}d ${totalHours}h watched`;
+
   return `
     <section class="section stats-section">
       <div class="section-header">
         <div>
-          <h3>Estatísticas</h3>
-          <p>Resumo geral da biblioteca</p>
+          <h3>Overview & Activity</h3>
+          <p>${watchTimeString} · ${formatCount(stats.shows || 0)} total library titles</p>
         </div>
         ${renderCollapseButton(collapseId)}
       </div>
@@ -337,22 +396,45 @@ function renderStatsSection(stats) {
         collapsed
           ? ""
           : `<div class="stat-grid">
-              ${renderStat(stats.watchedEpisodes, "episódios vistos")}
-              ${renderStat(stats.followedShows, "séries seguidas")}
-              ${renderStat(stats.watchedMovies, "filmes vistos")}
-              ${renderStat(stats.movieWatchlist, "filmes na lista")}
+              <div class="stat-card">
+                <div class="stat-icon">
+                  <i data-lucide="play-circle"></i>
+                </div>
+                <div class="stat-content">
+                  <p class="stat-value">${formatCount(stats.watchedEpisodes)}</p>
+                  <p class="stat-label">Watched Episodes</p>
+                </div>
+              </div>
+              <div class="stat-card emerald">
+                <div class="stat-icon">
+                  <i data-lucide="tv"></i>
+                </div>
+                <div class="stat-content">
+                  <p class="stat-value">${formatCount(stats.followedShows)}</p>
+                  <p class="stat-label">Followed Shows</p>
+                </div>
+              </div>
+              <div class="stat-card amber">
+                <div class="stat-icon">
+                  <i data-lucide="film"></i>
+                </div>
+                <div class="stat-content">
+                  <p class="stat-value">${formatCount(stats.watchedMovies)}</p>
+                  <p class="stat-label">Watched Movies</p>
+                </div>
+              </div>
+              <div class="stat-card purple">
+                <div class="stat-icon">
+                  <i data-lucide="bookmark"></i>
+                </div>
+                <div class="stat-content">
+                  <p class="stat-value">${formatCount((stats.forLaterShows || 0) + (stats.movieWatchlist || 0))}</p>
+                  <p class="stat-label">Watchlist & Later</p>
+                </div>
+              </div>
             </div>`
       }
     </section>
-  `;
-}
-
-function renderStat(value, label) {
-  return `
-    <div class="stat">
-      <strong>${formatCount(value)}</strong>
-      <span>${label}</span>
-    </div>
   `;
 }
 
@@ -363,7 +445,7 @@ function renderShelf(title, subtitle, shows, collapseId) {
       <div class="section-header">
         <div>
           <h3>${title}</h3>
-          <p>${subtitle}</p>
+          <p>${subtitle} · ${formatCount(shows.length)} shows</p>
         </div>
         ${collapseId ? renderCollapseButton(collapseId) : ""}
       </div>
@@ -372,7 +454,29 @@ function renderShelf(title, subtitle, shows, collapseId) {
           ? ""
           : shows.length
             ? `<div class="scroller" data-scroll-id="${escapeAttr(collapseId || title)}">${shows.map((show) => renderShowCard(show)).join("")}</div>`
-            : `<div class="empty">Nada por aqui ainda.</div>`
+            : `<div class="empty">No shows found in this category.</div>`
+      }
+    </section>
+  `;
+}
+
+function renderMovieShelf(title, subtitle, movies, collapseId) {
+  const collapsed = collapseId ? isCollapsed(collapseId) : false;
+  return `
+    <section class="section">
+      <div class="section-header">
+        <div>
+          <h3>${title}</h3>
+          <p>${subtitle} · ${formatCount(movies.length)} movies</p>
+        </div>
+        ${collapseId ? renderCollapseButton(collapseId) : ""}
+      </div>
+      ${
+        collapsed
+          ? ""
+          : movies.length
+            ? `<div class="scroller" data-scroll-id="${escapeAttr(collapseId || title)}">${movies.map((movie) => renderMovieCard(movie)).join("")}</div>`
+            : `<div class="empty">No movies in watchlist.</div>`
       }
     </section>
   `;
@@ -381,9 +485,9 @@ function renderShelf(title, subtitle, shows, collapseId) {
 function renderCollapseButton(collapseId) {
   const collapsed = isCollapsed(collapseId);
   return `
-    <button class="collapse-button" data-action="toggle-collapse" data-collapse-id="${escapeAttr(collapseId)}" aria-expanded="${collapsed ? "false" : "true"}" title="${collapsed ? "Expandir" : "Recolher"}">
+    <button class="collapse-button" data-action="toggle-collapse" data-collapse-id="${escapeAttr(collapseId)}" aria-expanded="${collapsed ? "false" : "true"}" title="${collapsed ? "Expand" : "Collapse"}">
       <i data-lucide="${collapsed ? "chevron-right" : "chevron-down"}"></i>
-      <span class="sr-only">${collapsed ? "Expandir" : "Recolher"}</span>
+      <span class="sr-only">${collapsed ? "Expand" : "Collapse"}</span>
     </button>
   `;
 }
@@ -394,25 +498,31 @@ function renderShowsView() {
     <div class="view-actions">
       <button class="button primary" data-action="goto-add-show">
         <i data-lucide="plus"></i>
-        Adicionar série
+        Add show
       </button>
       <button class="button" data-action="catalog-force">
         <i data-lucide="refresh-cw"></i>
-        Atualizar episódios online
+        Update online episodes
       </button>
     </div>
-    <div class="search-row">
+    <div class="search-row show-search-row">
       <label class="search-box">
-        <span class="sr-only">Buscar série</span>
+        <span class="sr-only">Search shows</span>
         <i data-lucide="search"></i>
-        <input class="input" type="search" data-input="search" value="${escapeAttr(state.search)}" autocomplete="off" enterkeyhint="search" placeholder="Buscar série" />
+        <input class="input" type="search" data-input="search" value="${escapeAttr(state.search)}" autocomplete="off" enterkeyhint="search" placeholder="Filter shows by title (Press / to search)" />
+        ${state.search ? `<button class="search-clear-btn" data-action="clear-search" title="Clear search">✕</button>` : ""}
       </label>
       <div class="segmented" role="tablist">
-        ${renderFilterButton("show", "active", "Ativas")}
-        ${renderFilterButton("show", "later", "Ver depois")}
-        ${renderFilterButton("show", "favorites", "Favoritas")}
-        ${renderFilterButton("show", "archived", "Arquivadas")}
-        ${renderFilterButton("show", "all", "Todas")}
+        ${renderShowFilterButton("active", "Active")}
+        ${renderShowFilterButton("continuing", "Continue")}
+        ${renderShowFilterButton("up-to-date", "Up to date")}
+        ${renderShowFilterButton("waiting", "Waiting")}
+        ${renderShowFilterButton("forgotten", "Forgotten")}
+        ${renderShowFilterButton("completed", "Completed")}
+        ${renderShowFilterButton("later", "Watch later")}
+        ${renderShowFilterButton("favorites", "Favorites")}
+        ${renderShowFilterButton("archived", "Archived")}
+        ${renderShowFilterButton("all", "All")}
       </div>
     </div>
     ${renderLibraryControls("show")}
@@ -423,30 +533,31 @@ function renderShowsView() {
 function renderShowLibraryResults(shows = filterShows()) {
   return shows.length
     ? `<div class="grid">${shows.map((show) => renderShowCard(show)).join("")}</div>`
-    : `<div class="empty">Nenhuma série encontrada.</div>`;
+    : `<div class="empty">No shows found matching your filter criteria.</div>`;
 }
 
 function renderAddShowView() {
   return `
     <section class="sync-panel">
       <div class="settings-block">
-        <h3>Buscar série</h3>
+        <h3>Search TVmaze Database</h3>
+        <p class="card-meta">Enter the name of any TV show to import its seasons, episode titles, air dates, and cover art.</p>
         <div class="settings-row">
-          <label class="search-box">
-            <span class="sr-only">Nome da série</span>
+          <label class="search-box" style="width: 100%;">
+            <span class="sr-only">Show name</span>
             <i data-lucide="search"></i>
-            <input class="input" data-input="add-show-query" value="${escapeAttr(state.addShowQuery)}" placeholder="Ex.: The Last of Us" />
+            <input class="input" data-input="add-show-query" value="${escapeAttr(state.addShowQuery)}" placeholder="Ex.: The Last of Us, Severance, Arcane..." />
           </label>
           <button class="button primary" data-action="search-tvmaze" ${state.busy ? "disabled" : ""}>
             <i data-lucide="search"></i>
-            Buscar
+            Search
           </button>
         </div>
       </div>
       ${
         state.addShowResults.length
           ? `<div class="source-results">${state.addShowResults.map((result) => renderSourceResult(result)).join("")}</div>`
-          : `<div class="empty">Pesquise uma série para importar temporadas e episódios.</div>`
+          : `<div class="empty">Search for a show above to explore online results.</div>`
       }
     </section>
   `;
@@ -463,16 +574,16 @@ function renderSourceResult(result) {
       </div>
       <div class="source-body">
         <h3>${escapeHtml(show.name)}</h3>
-        <p class="card-meta">${escapeHtml(meta || "Sem metadados")}</p>
+        <p class="card-meta">${escapeHtml(meta || "No metadata available")}</p>
         <p>${escapeHtml(stripHtml(show.summary || "").slice(0, 220))}</p>
         <div class="badges">
-          ${(show.genres || []).slice(0, 4).map((genre) => `<span class="badge">${escapeHtml(genre)}</span>`).join("")}
+          ${(show.genres || []).slice(0, 4).map((genre) => `<span class="badge cyan">${escapeHtml(genre)}</span>`).join("")}
         </div>
       </div>
       <div class="source-actions">
         <button class="button teal" data-action="add-tvmaze-show" data-tvmaze-id="${show.id}">
           <i data-lucide="plus"></i>
-          Adicionar
+          Add to library
         </button>
       </div>
     </article>
@@ -484,6 +595,12 @@ function renderFilterButton(kind, value, label) {
   return `<button class="${active ? "active" : ""}" data-action="${kind}-filter" data-filter="${value}">${label}</button>`;
 }
 
+function renderShowFilterButton(value, label) {
+  const active = state.showFilter === value;
+  const count = getShows().filter((show) => matchesShowFilter(show, value)).length;
+  return `<button class="${active ? "active" : ""}" data-action="show-filter" data-filter="${value}"><span>${label}</span><span class="filter-count">${formatCount(count)}</span></button>`;
+}
+
 function renderLibraryControls(kind) {
   const genres = kind === "show" ? availableShowGenres() : availableMovieGenres();
   const selectedGenre = kind === "show" ? state.showGenreFilter : state.movieGenreFilter;
@@ -491,32 +608,32 @@ function renderLibraryControls(kind) {
   const sortOptions =
     kind === "show"
       ? [
-          ["title-asc", "A-Z"],
+          ["title-asc", "A-Z (Alphabetical)"],
           ["title-desc", "Z-A"],
-          ["year-desc", "Ano: mais recentes"],
-          ["year-asc", "Ano: mais antigas"],
-          ["last-watched", "Último visto"],
-          ["progress-desc", "Mais vistos"],
+          ["year-desc", "Year: Newest first"],
+          ["year-asc", "Year: Oldest first"],
+          ["last-watched", "Last watched date"],
+          ["progress-desc", "Most watched episodes"],
         ]
       : [
-          ["title-asc", "A-Z"],
+          ["title-asc", "A-Z (Alphabetical)"],
           ["title-desc", "Z-A"],
-          ["year-desc", "Ano: mais recentes"],
-          ["year-asc", "Ano: mais antigos"],
-          ["last-watched", "Último visto"],
+          ["year-desc", "Year: Newest first"],
+          ["year-asc", "Year: Oldest first"],
+          ["last-watched", "Last watched date"],
         ];
 
   return `
     <div class="library-controls">
       <label>
-        <span>Gênero</span>
+        <span>Filter by Genre</span>
         <select class="select" data-select="${kind}-genre">
-          <option value="all">Todos os gêneros</option>
+          <option value="all">All genres (${genres.length})</option>
           ${genres.map((genre) => `<option value="${escapeAttr(genre)}" ${selectedGenre === genre ? "selected" : ""}>${escapeHtml(genre)}</option>`).join("")}
         </select>
       </label>
       <label>
-        <span>Ordenar</span>
+        <span>Sort items</span>
         <select class="select" data-select="${kind}-sort">
           ${sortOptions.map(([value, label]) => `<option value="${value}" ${selectedSort === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
         </select>
@@ -526,22 +643,54 @@ function renderLibraryControls(kind) {
 }
 
 function renderShowCard(show) {
+  const watched = watchedCount(show);
+  const total = hasCatalog(show) ? (show.catalogEpisodes || []).length : watched;
+  const pct = total > 0 ? Math.min(100, Math.round((watched / total) * 100)) : 0;
+  const next = nextEpisode(show);
   const last = lastWatchedEpisode(show) || lastEpisode(show);
   const image = mediaImage(show);
   const year = mediaYear(show.premiered);
+  const trackingStatus = showTrackingStatus(show);
+  
   const badges = [
-    hasCatalog(show) ? `<span class="badge teal">Catálogo</span>` : "",
-    show.favorite ? `<span class="badge gold">Favorita</span>` : "",
-    show.forLater ? `<span class="badge teal">Ver depois</span>` : "",
-    show.archived ? `<span class="badge">Arquivada</span>` : "",
+    renderShowTrackingBadge(trackingStatus),
+    show.favorite ? `<span class="badge gold"><i data-lucide="star"></i> Favorite</span>` : "",
+    show.forLater ? `<span class="badge purple"><i data-lucide="bookmark"></i> Later</span>` : "",
   ].join("");
+
   return `
-    <article class="show-card" style="${image ? "" : coverVars(show.title)}">
-      <button data-action="open-show" data-id="${escapeAttr(show.id)}">
-        ${renderCover(show.title, image)}
+    <article class="show-card">
+      <div class="card-quick-actions">
+        ${
+          next
+            ? `<button class="quick-action-btn" data-action="quick-watch-next" data-id="${escapeAttr(show.id)}" title="Mark Next: S${next.season}E${next.number}">
+                <i data-lucide="plus"></i>
+              </button>`
+            : ""
+        }
+        <button class="quick-action-btn ${show.favorite ? "active-fav" : ""}" data-action="quick-toggle-fav" data-id="${escapeAttr(show.id)}" title="${show.favorite ? "Unfavorite" : "Favorite"}">
+          <i data-lucide="star"></i>
+        </button>
+      </div>
+      <button class="card-trigger" data-action="open-show" data-id="${escapeAttr(show.id)}">
+        <div class="cover ${image ? "" : "cover-fallback"}" style="${image ? `background-image:url('${escapeAttr(image)}')` : coverVars(show.title)}">
+          ${image ? "" : `<span class="cover-initial">${initials(show.title)}</span>`}
+          <div class="cover-top-badges">
+            ${show.rating ? `<span class="cover-rating">★ ${Number(show.rating).toFixed(1)}</span>` : "<span></span>"}
+          </div>
+          ${
+            total > 0
+              ? `<div class="cover-progress-bar">
+                  <div class="cover-progress-fill ${pct === 100 ? "complete" : ""}" style="width: ${pct}%;"></div>
+                </div>`
+              : ""
+          }
+        </div>
         <div class="card-body">
           <h3 class="card-title">${escapeHtml(show.title)}</h3>
-          <p class="card-meta">${[`${formatCount(watchedCount(show))} eps vistos`, year, last ? `S${last.season}E${last.number}` : ""].filter(Boolean).join(" · ")}</p>
+          <p class="card-meta">
+            ${next ? `<span class="card-meta-highlight">Next: S${next.season}E${next.number}</span> · ` : ""}${formatCount(watched)}${total > watched ? `/${formatCount(total)}` : ""} eps${year ? ` · ${year}` : ""}
+          </p>
           <div class="badges">${badges}</div>
         </div>
       </button>
@@ -557,59 +706,99 @@ function renderShowDetail() {
   }
   const seasons = hasCatalog(show) ? groupCatalogEpisodes(show) : groupEpisodes(show);
   const next = nextEpisode(show);
-  const progress = hasCatalog(show)
-    ? `${formatCount(watchedCount(show))} de ${formatCount(show.catalogEpisodes.length)} episódios vistos`
-    : `${formatCount(watchedCount(show))} episódios importados`;
+  const trackingStatus = showTrackingStatus(show);
+  const caughtUpLabel = trackingStatus.key === "waiting" ? "Waiting" : trackingStatus.label;
+  const total = hasCatalog(show) ? (show.catalogEpisodes || []).length : watchedCount(show);
+  const watched = watchedCount(show);
+  const pct = total > 0 ? Math.min(100, Math.round((watched / total) * 100)) : 0;
   const image = show.image || "";
+  const year = mediaYear(show.premiered);
+
   return `
     <section class="detail">
-      <aside class="detail-cover" style="${image ? "" : coverVars(show.title)}">
-        <div class="cover ${image ? "cover-image" : ""}" style="${image ? `background-image:url('${escapeAttr(image)}')` : ""}">
-          ${image ? "" : `<span class="cover-initial">${initials(show.title)}</span>`}
+      <div class="detail-hero">
+        <div class="detail-backdrop" style="${image ? `background-image:url('${escapeAttr(image)}')` : ""}"></div>
+        <div class="detail-backdrop-overlay"></div>
+        <div class="detail-hero-content">
+          <div class="detail-poster-wrap">
+            <div class="detail-poster" style="${image ? `background-image:url('${escapeAttr(image)}')` : coverVars(show.title)}">
+              ${image ? "" : `<span class="cover-initial" style="font-size: 2.5rem;">${initials(show.title)}</span>`}
+            </div>
+          </div>
+          <div class="detail-info">
+            <button class="button ghost sm detail-back-btn" data-action="back-to-shows">
+              <i data-lucide="arrow-left"></i>
+              Back to Shows
+            </button>
+            <h2 class="detail-title">${escapeHtml(show.title)}</h2>
+            <div class="detail-meta-row">
+              ${year ? `<span class="detail-meta-item"><i data-lucide="calendar"></i> ${year}</span>` : ""}
+              ${show.status ? `<span class="detail-meta-item"><i data-lucide="info"></i> ${escapeHtml(show.status)}</span>` : ""}
+              ${show.language ? `<span class="detail-meta-item"><i data-lucide="globe"></i> ${escapeHtml(show.language)}</span>` : ""}
+            </div>
+            <div class="badges">
+              ${renderShowTrackingBadge(trackingStatus)}
+              ${(show.genres || []).map((g) => `<span class="badge cyan">${escapeHtml(g)}</span>`).join("")}
+              ${show.favorite ? `<span class="badge gold"><i data-lucide="star"></i> Favorite</span>` : ""}
+              ${show.forLater ? `<span class="badge purple"><i data-lucide="bookmark"></i> Watch later</span>` : ""}
+              ${show.archived ? `<span class="badge">Archived</span>` : ""}
+            </div>
+            <div class="detail-progress-box">
+              <div class="detail-progress-label">
+                <span>Progress: <strong>${formatCount(watched)} of ${formatCount(total)} episodes</strong> watched</span>
+                <span><strong>${pct}%</strong></span>
+              </div>
+              <div class="detail-progress-track">
+                <div class="detail-progress-bar ${pct === 100 ? "complete" : ""}" style="width: ${pct}%;"></div>
+              </div>
+            </div>
+            <div class="detail-actions">
+              ${
+                next
+                  ? `<button class="button primary" data-action="watch-next" data-id="${escapeAttr(show.id)}">
+                      <i data-lucide="check-circle"></i>
+                      Mark S${next.season}E${next.number} Watched
+                    </button>`
+                  : `<button class="button teal" disabled>
+                      <i data-lucide="badge-check"></i>
+                      ${caughtUpLabel}
+                    </button>`
+              }
+              <button class="button" data-action="fetch-catalog" data-id="${escapeAttr(show.id)}" ${state.catalogLoading ? "disabled" : ""}>
+                <i data-lucide="refresh-cw"></i>
+                ${hasCatalog(show) ? "Update episodes" : "Find episodes online"}
+              </button>
+              <button class="icon-button ${show.favorite ? "active gold" : ""}" data-action="toggle-show" data-field="favorite" data-id="${escapeAttr(show.id)}" title="Favorite">
+                <i data-lucide="star"></i>
+              </button>
+              <button class="icon-button ${show.forLater ? "active" : ""}" data-action="toggle-show" data-field="forLater" data-id="${escapeAttr(show.id)}" title="Watch later">
+                <i data-lucide="bookmark"></i>
+              </button>
+              <button class="icon-button ${show.archived ? "active" : ""}" data-action="toggle-show" data-field="archived" data-id="${escapeAttr(show.id)}" title="Archived">
+                <i data-lucide="archive"></i>
+              </button>
+            </div>
+            ${show.summary ? `<p class="detail-summary">${escapeHtml(show.summary)}</p>` : ""}
+          </div>
         </div>
-      </aside>
+      </div>
+
       <div>
-        <button class="button ghost" data-action="back-to-shows">
-          <i data-lucide="arrow-left"></i>
-          Séries
-        </button>
-        <h2 class="detail-title">${escapeHtml(show.title)}</h2>
-        <p class="page-kicker">${progress}${show.status ? ` · ${escapeHtml(show.status)}` : ""}${lastEpisode(show) ? ` · último S${lastEpisode(show).season}E${lastEpisode(show).number}` : ""}</p>
-        <div class="detail-actions">
-          <button class="button primary" data-action="watch-next" data-id="${escapeAttr(show.id)}" ${!hasCatalog(show) ? "" : ""}>
-            <i data-lucide="check-circle"></i>
-            Marcar S${next.season}E${next.number}
-          </button>
-          <button class="button" data-action="fetch-catalog" data-id="${escapeAttr(show.id)}" ${state.catalogLoading ? "disabled" : ""}>
-            <i data-lucide="refresh-cw"></i>
-            ${hasCatalog(show) ? "Atualizar episódios" : "Buscar episódios"}
-          </button>
-          <button class="icon-button ${show.favorite ? "active" : ""}" data-action="toggle-show" data-field="favorite" data-id="${escapeAttr(show.id)}" title="Favorita">
-            <i data-lucide="star"></i>
-          </button>
-          <button class="icon-button ${show.forLater ? "active" : ""}" data-action="toggle-show" data-field="forLater" data-id="${escapeAttr(show.id)}" title="Ver depois">
-            <i data-lucide="bookmark"></i>
-          </button>
-          <button class="icon-button ${show.archived ? "active" : ""}" data-action="toggle-show" data-field="archived" data-id="${escapeAttr(show.id)}" title="Arquivada">
-            <i data-lucide="archive"></i>
-          </button>
-        </div>
-        ${show.summary ? `<p class="detail-summary">${escapeHtml(show.summary)}</p>` : ""}
         ${
           hasCatalog(show)
-            ? `<div class="segmented episode-segmented">
-                ${renderEpisodeFilterButton("all", "Todos")}
-                ${renderEpisodeFilterButton("unseen", "Não vistos")}
-                ${renderEpisodeFilterButton("seen", "Vistos")}
+            ? `<div class="segmented" style="margin-bottom: 20px;">
+                ${renderEpisodeFilterButton("all", "All Episodes")}
+                ${renderEpisodeFilterButton("unseen", "Unwatched Only")}
+                ${renderEpisodeFilterButton("seen", "Watched Only")}
               </div>`
             : `<div class="empty catalog-empty">
-                Esta série ainda não tem a lista completa de episódios. Use "Buscar episódios" para carregar temporadas, nomes e datas.
+                This show does not have a complete online catalog yet. Click "Find episodes online" above to scrape full seasons and episode data.
               </div>`
         }
         ${
           seasons.length
             ? seasons.map(([season, episodes]) => (hasCatalog(show) ? renderCatalogSeason(show, season, episodes) : renderHistorySeason(show, season, episodes))).join("")
-            : `<div class="empty">Nenhum episódio registrado para esta série.</div>`
+            : `<div class="empty">No episodes recorded for this show.</div>`
         }
       </div>
     </section>
@@ -631,14 +820,28 @@ function renderCatalogSeason(show, season, episodes) {
   const collapseId = seasonCollapseId(show, season);
   const collapsed = isCollapsed(collapseId);
   const watchedInSeason = episodes.filter((episode) => isEpisodeWatched(show, episode)).length;
+  const isSeasonComplete = watchedInSeason === episodes.length && episodes.length > 0;
+
   return `
     <section class="season-block">
       <div class="season-heading">
-        <div>
-          <h3 class="season-title">${seasonLabel(season)}</h3>
-          <p>${formatCount(watchedInSeason)} de ${formatCount(episodes.length)} vistos${visible.length !== episodes.length ? ` · ${formatCount(visible.length)} filtrados` : ""}</p>
+        <div class="season-heading-left">
+          ${renderCollapseButton(collapseId)}
+          <div>
+            <h3 class="season-title">${seasonLabel(season)}</h3>
+            <p class="season-stats">${formatCount(watchedInSeason)} of ${formatCount(episodes.length)} watched${isSeasonComplete ? " · Complete" : ""}</p>
+          </div>
         </div>
-        ${renderCollapseButton(collapseId)}
+        <div class="season-heading-actions">
+          ${
+            !isSeasonComplete
+              ? `<button class="button sm" data-action="mark-season-watched" data-id="${escapeAttr(show.id)}" data-season="${season}" title="Mark entire season as watched">
+                  <i data-lucide="check-check"></i>
+                  Mark Season Watched
+                </button>`
+              : `<span class="badge teal"><i data-lucide="check"></i> Season Watched</span>`
+          }
+        </div>
       </div>
       ${collapsed ? "" : `<div class="episode-list">${visible.map((episode) => renderCatalogEpisodeRow(show, episode)).join("")}</div>`}
     </section>
@@ -647,18 +850,18 @@ function renderCatalogSeason(show, season, episodes) {
 
 function renderCatalogEpisodeRow(show, episode) {
   const watched = isEpisodeWatched(show, episode);
-  const code = `S${episode.season}E${episode.number}`;
+  const code = `S${String(episode.season).padStart(2, "0")}E${String(episode.number).padStart(2, "0")}`;
   return `
     <article class="episode-row ${watched ? "watched" : ""}">
-      <button class="episode-check" data-action="toggle-episode" data-id="${escapeAttr(show.id)}" data-season="${episode.season}" data-episode="${episode.number}" title="${watched ? "Marcar como não visto" : "Marcar como visto"}">
+      <button class="episode-check" data-action="toggle-episode" data-id="${escapeAttr(show.id)}" data-season="${episode.season}" data-episode="${episode.number}" title="${watched ? "Click to unwatch" : "Click to mark as watched"}">
         <i data-lucide="${watched ? "check" : "circle"}"></i>
       </button>
       <div class="episode-code">${code}</div>
       <div class="episode-copy">
-        <h4>${escapeHtml(episode.title || `Episódio ${episode.number}`)}</h4>
-        <p>${[episode.airdate ? formatDate(episode.airdate) : "", episode.runtime ? `${episode.runtime} min` : ""].filter(Boolean).join(" · ") || "Sem data"}</p>
+        <h4>${escapeHtml(episode.title || `Episode ${episode.number}`)}</h4>
+        <p>${[episode.airdate ? formatDate(episode.airdate) : "", episode.runtime ? `${episode.runtime} min` : ""].filter(Boolean).join(" · ") || "No airdate"}</p>
       </div>
-      <span class="badge ${watched ? "teal" : ""}">${watched ? "Visto" : "Não visto"}</span>
+      <span class="badge ${watched ? "teal" : ""}">${watched ? "Watched" : "Unwatched"}</span>
     </article>
   `;
 }
@@ -669,11 +872,13 @@ function renderHistorySeason(show, season, episodes) {
   return `
     <section class="season-block">
       <div class="season-heading">
-        <div>
-          <h3 class="season-title">${seasonLabel(season)}</h3>
-          <p>${formatCount(episodes.length)} episódios importados</p>
+        <div class="season-heading-left">
+          ${renderCollapseButton(collapseId)}
+          <div>
+            <h3 class="season-title">${seasonLabel(season)}</h3>
+            <p class="season-stats">${formatCount(episodes.length)} imported episodes</p>
+          </div>
         </div>
-        ${renderCollapseButton(collapseId)}
       </div>
       ${
         collapsed
@@ -684,7 +889,7 @@ function renderHistorySeason(show, season, episodes) {
                   (episode) => `
                     <div class="episode-pill">
                       <span>E${episode.number}${episode.times > 1 ? ` · ${episode.times}x` : ""}</span>
-                      <button data-action="unwatch-episode" data-id="${escapeAttr(show.id)}" data-season="${episode.season}" data-episode="${episode.number}" title="Remover">
+                      <button data-action="unwatch-episode" data-id="${escapeAttr(show.id)}" data-season="${episode.season}" data-episode="${episode.number}" title="Remove">
                         <i data-lucide="x"></i>
                       </button>
                     </div>
@@ -703,20 +908,21 @@ function renderMoviesView() {
     <div class="view-actions">
       <button class="button" data-action="posters-force">
         <i data-lucide="image"></i>
-        Atualizar dados
+        Update movie metadata & posters
       </button>
     </div>
     <div class="search-row">
       <label class="search-box">
-        <span class="sr-only">Buscar filme</span>
+        <span class="sr-only">Search movies</span>
         <i data-lucide="search"></i>
-        <input class="input" type="search" data-input="search" value="${escapeAttr(state.search)}" autocomplete="off" enterkeyhint="search" placeholder="Buscar filme" />
+        <input class="input" type="search" data-input="search" value="${escapeAttr(state.search)}" autocomplete="off" enterkeyhint="search" placeholder="Filter movies by title (Press / to search)" />
+        ${state.search ? `<button class="search-clear-btn" data-action="clear-search" title="Clear search">✕</button>` : ""}
       </label>
       <div class="segmented" role="tablist">
-        ${renderFilterButton("movie", "watched", "Vistos")}
-        ${renderFilterButton("movie", "watchlist", "Lista")}
-        ${renderFilterButton("movie", "favorites", "Favoritos")}
-        ${renderFilterButton("movie", "all", "Todos")}
+        ${renderFilterButton("movie", "watched", "Watched")}
+        ${renderFilterButton("movie", "watchlist", "Watchlist")}
+        ${renderFilterButton("movie", "favorites", "Favorites")}
+        ${renderFilterButton("movie", "all", "All")}
       </div>
     </div>
     ${renderLibraryControls("movie")}
@@ -727,24 +933,37 @@ function renderMoviesView() {
 function renderMovieLibraryResults(movies = filterMovies()) {
   return movies.length
     ? `<div class="grid">${movies.map((movie) => renderMovieCard(movie)).join("")}</div>`
-    : `<div class="empty">Nenhum filme encontrado.</div>`;
+    : `<div class="empty">No movies found matching your filter criteria.</div>`;
 }
 
 function renderMovieCard(movie) {
   const year = mediaYear(movie.releaseDate);
   const image = mediaImage(movie);
-  const meta = [movie.watched ? "visto" : movie.watchlist ? "lista" : "", year].filter(Boolean).join(" · ");
+  const meta = [movie.watched ? "Watched" : movie.watchlist ? "Watchlist" : "", year].filter(Boolean).join(" · ");
   return `
-    <article class="movie-card" style="${image ? "" : coverVars(movie.title)}">
-      <button data-action="open-movie" data-id="${escapeAttr(movie.id)}">
-        ${renderCover(movie.title, image)}
+    <article class="movie-card">
+      <div class="card-quick-actions">
+        <button class="quick-action-btn ${movie.watched ? "active-fav" : ""}" data-action="quick-toggle-movie-watched" data-id="${escapeAttr(movie.id)}" title="${movie.watched ? "Mark Unwatched" : "Mark Watched"}">
+          <i data-lucide="${movie.watched ? "check" : "plus"}"></i>
+        </button>
+        <button class="quick-action-btn ${movie.favorite ? "active-fav" : ""}" data-action="quick-toggle-movie-fav" data-id="${escapeAttr(movie.id)}" title="${movie.favorite ? "Unfavorite" : "Favorite"}">
+          <i data-lucide="star"></i>
+        </button>
+      </div>
+      <button class="card-trigger" data-action="open-movie" data-id="${escapeAttr(movie.id)}">
+        <div class="cover ${image ? "" : "cover-fallback"}" style="${image ? `background-image:url('${escapeAttr(image)}')` : coverVars(movie.title)}">
+          ${image ? "" : `<span class="cover-initial">${initials(movie.title)}</span>`}
+          <div class="cover-top-badges">
+            ${movie.rating ? `<span class="cover-rating">★ ${Number(movie.rating).toFixed(1)}</span>` : "<span></span>"}
+          </div>
+        </div>
         <div class="card-body">
           <h3 class="card-title">${escapeHtml(movie.title)}</h3>
-          <p class="card-meta">${escapeHtml(meta || "sem data")}</p>
+          <p class="card-meta">${escapeHtml(meta || "No date")}</p>
           <div class="badges">
-            ${movie.favorite ? `<span class="badge gold">Favorito</span>` : ""}
-            ${movie.watchlist ? `<span class="badge teal">Lista</span>` : ""}
-            ${movie.watched ? `<span class="badge red">Visto</span>` : ""}
+            ${movie.favorite ? `<span class="badge gold"><i data-lucide="star"></i> Favorite</span>` : ""}
+            ${movie.watchlist ? `<span class="badge purple"><i data-lucide="bookmark"></i> Watchlist</span>` : ""}
+            ${movie.watched ? `<span class="badge teal"><i data-lucide="check"></i> Watched</span>` : ""}
           </div>
         </div>
       </button>
@@ -761,56 +980,73 @@ function renderMovieDetail() {
   const image = mediaImage(movie);
   const year = mediaYear(movie.releaseDate);
   const runtime = movie.runtimeSeconds ? `${Math.round(Number(movie.runtimeSeconds) / 60)} min` : "";
-  const meta = [year, runtime, movie.rating ? `TMDb ${Number(movie.rating).toFixed(1)}` : ""].filter(Boolean).join(" · ");
+  const meta = [year, runtime, movie.rating ? `TMDb ${Number(movie.rating).toFixed(1)} ★` : ""].filter(Boolean).join(" · ");
   const summary = movie.summary || movie.overview || "";
+
   return `
     <section class="detail">
-      <aside class="detail-cover" style="${image ? "" : coverVars(movie.title)}">
-        <div class="cover ${image ? "cover-image" : ""}" style="${image ? `background-image:url('${escapeAttr(image)}')` : ""}">
-          ${image ? "" : `<span class="cover-initial">${initials(movie.title)}</span>`}
+      <div class="detail-hero">
+        <div class="detail-backdrop" style="${image ? `background-image:url('${escapeAttr(image)}')` : ""}"></div>
+        <div class="detail-backdrop-overlay"></div>
+        <div class="detail-hero-content">
+          <div class="detail-poster-wrap">
+            <div class="detail-poster" style="${image ? `background-image:url('${escapeAttr(image)}')` : coverVars(movie.title)}">
+              ${image ? "" : `<span class="cover-initial" style="font-size: 2.5rem;">${initials(movie.title)}</span>`}
+            </div>
+          </div>
+          <div class="detail-info">
+            <button class="button ghost sm detail-back-btn" data-action="back-to-movies">
+              <i data-lucide="arrow-left"></i>
+              Back to Movies
+            </button>
+            <h2 class="detail-title">${escapeHtml(movie.title)}</h2>
+            <div class="detail-meta-row">
+              ${year ? `<span class="detail-meta-item"><i data-lucide="calendar"></i> ${year}</span>` : ""}
+              ${runtime ? `<span class="detail-meta-item"><i data-lucide="clock"></i> ${runtime}</span>` : ""}
+              ${movie.rating ? `<span class="detail-meta-item"><i data-lucide="star"></i> TMDb ${Number(movie.rating).toFixed(1)}</span>` : ""}
+            </div>
+            <div class="badges">
+              ${(movie.genres || []).map((g) => `<span class="badge cyan">${escapeHtml(g)}</span>`).join("")}
+              ${movie.favorite ? `<span class="badge gold"><i data-lucide="star"></i> Favorite</span>` : ""}
+              ${movie.watchlist ? `<span class="badge purple"><i data-lucide="bookmark"></i> Watchlist</span>` : ""}
+              ${movie.watched ? `<span class="badge teal"><i data-lucide="check"></i> Watched</span>` : ""}
+            </div>
+            <div class="detail-actions">
+              <button class="button ${movie.watched ? "teal" : "primary"}" data-action="toggle-movie" data-field="watched" data-id="${escapeAttr(movie.id)}">
+                <i data-lucide="${movie.watched ? "check-circle" : "circle"}"></i>
+                ${movie.watched ? "Watched" : "Mark as watched"}
+              </button>
+              <button class="icon-button ${movie.favorite ? "active gold" : ""}" data-action="toggle-movie" data-field="favorite" data-id="${escapeAttr(movie.id)}" title="Favorite">
+                <i data-lucide="star"></i>
+              </button>
+              <button class="icon-button ${movie.watchlist ? "active" : ""}" data-action="toggle-movie" data-field="watchlist" data-id="${escapeAttr(movie.id)}" title="Watchlist">
+                <i data-lucide="bookmark"></i>
+              </button>
+              <button class="button" data-action="fetch-movie-details" data-id="${escapeAttr(movie.id)}" ${state.busy ? "disabled" : ""}>
+                <i data-lucide="refresh-cw"></i>
+                Update TMDb details
+              </button>
+            </div>
+            ${
+              summary
+                ? `<p class="detail-summary">${escapeHtml(summary)}</p>`
+                : `<div class="empty catalog-empty">No synopsis available yet. Enter a TMDb token in Cloud & Storage to fetch details.</div>`
+            }
+          </div>
         </div>
-      </aside>
-      <div>
-        <button class="button ghost" data-action="back-to-movies">
-          <i data-lucide="arrow-left"></i>
-          Filmes
-        </button>
-        <h2 class="detail-title">${escapeHtml(movie.title)}</h2>
-        <p class="page-kicker">${escapeHtml(meta || "Sem metadados")}</p>
-        <div class="detail-actions">
-          <button class="button ${movie.watched ? "teal" : "primary"}" data-action="toggle-movie" data-field="watched" data-id="${escapeAttr(movie.id)}">
-            <i data-lucide="${movie.watched ? "check-circle" : "circle"}"></i>
-            ${movie.watched ? "Visto" : "Marcar visto"}
-          </button>
-          <button class="icon-button ${movie.favorite ? "active" : ""}" data-action="toggle-movie" data-field="favorite" data-id="${escapeAttr(movie.id)}" title="Favorito">
-            <i data-lucide="star"></i>
-          </button>
-          <button class="icon-button ${movie.watchlist ? "active" : ""}" data-action="toggle-movie" data-field="watchlist" data-id="${escapeAttr(movie.id)}" title="Lista">
-            <i data-lucide="bookmark"></i>
-          </button>
-          <button class="button" data-action="fetch-movie-details" data-id="${escapeAttr(movie.id)}" ${state.busy ? "disabled" : ""}>
-            <i data-lucide="refresh-cw"></i>
-            Atualizar detalhes
-          </button>
-        </div>
-        ${
-          summary
-            ? `<p class="detail-summary">${escapeHtml(summary)}</p>`
-            : `<div class="empty catalog-empty">Ainda não tenho sinopse para este filme. Use "Atualizar detalhes" com o TMDb configurado.</div>`
-        }
-        ${renderMovieFacts(movie)}
       </div>
+      ${renderMovieFacts(movie)}
     </section>
   `;
 }
 
 function renderMovieFacts(movie) {
   const facts = [
-    movie.watchedAt ? ["Assistido em", formatDateTime(movie.watchedAt)] : null,
-    mediaYear(movie.releaseDate) ? ["Lançamento", formatDate(movie.releaseDate)] : null,
-    movie.originalTitle && movie.originalTitle !== movie.title ? ["Título original", movie.originalTitle] : null,
-    movie.genres?.length ? ["Gêneros", movie.genres.join(", ")] : null,
-    movie.external?.imdbId ? ["IMDb", movie.external.imdbId] : null,
+    movie.watchedAt ? ["Watched on", formatDateTime(movie.watchedAt)] : null,
+    mediaYear(movie.releaseDate) ? ["Release date", formatDate(movie.releaseDate)] : null,
+    movie.originalTitle && movie.originalTitle !== movie.title ? ["Original title", movie.originalTitle] : null,
+    movie.genres?.length ? ["Genres", movie.genres.join(", ")] : null,
+    movie.external?.imdbId ? ["IMDb ID", movie.external.imdbId] : null,
   ].filter(Boolean);
   if (!facts.length) return "";
   return `
@@ -830,8 +1066,8 @@ function renderListsView() {
     .sort((a, b) => a.title.localeCompare(b.title));
   return `
     <div class="list-dashboard">
-      ${renderFavoriteCollection("Séries favoritas", "Marcadas como favoritas no TV Time ou aqui", favoriteShows, "show", "lists:favorite-shows")}
-      ${renderFavoriteCollection("Filmes favoritos", "Filmes favoritos preservados da importação", favoriteMovies, "movie", "lists:favorite-movies")}
+      ${renderFavoriteCollection("Favorite shows", "Marked as favorites in TV Time or Watchline", favoriteShows, "show", "lists:favorite-shows")}
+      ${renderFavoriteCollection("Favorite movies", "Favorite movies preserved in your library", favoriteMovies, "movie", "lists:favorite-movies")}
       ${renderImportedLists(lists)}
     </div>
   `;
@@ -844,7 +1080,7 @@ function renderFavoriteCollection(title, subtitle, items, type, collapseId) {
       <div class="section-header">
         <div>
           <h3>${title}</h3>
-          <p>${subtitle} · ${formatCount(items.length)} itens</p>
+          <p>${subtitle} · ${formatCount(items.length)} items</p>
         </div>
         ${renderCollapseButton(collapseId)}
       </div>
@@ -853,7 +1089,7 @@ function renderFavoriteCollection(title, subtitle, items, type, collapseId) {
           ? ""
           : items.length
             ? `<div class="mini-grid">${items.map((item) => renderFavoriteTile(item, type)).join("")}</div>`
-            : `<div class="empty">Nenhum favorito encontrado.</div>`
+            : `<div class="empty">No items found in this list.</div>`
       }
     </section>
   `;
@@ -861,12 +1097,12 @@ function renderFavoriteCollection(title, subtitle, items, type, collapseId) {
 
 function renderFavoriteTile(item, type) {
   const image = mediaImage(item);
-  const title = item.title || "Sem título";
+  const title = item.title || "Untitled";
   const year = mediaYear(item.releaseDate);
   const meta =
     type === "show"
-      ? `${formatCount(watchedCount(item))} eps vistos${hasCatalog(item) ? ` · ${formatCount(item.catalogEpisodes.length)} disponíveis` : ""}`
-      : [item.watched ? "visto" : "", year || "sem ano"].filter(Boolean).join(" · ");
+      ? `${formatCount(watchedCount(item))} watched eps${hasCatalog(item) ? ` · ${formatCount(item.catalogEpisodes.length)} available` : ""}`
+      : [item.watched ? "Watched" : "", year || "No year"].filter(Boolean).join(" · ");
   const cover = renderCover(title, image);
   const body = `
     ${cover}
@@ -879,8 +1115,8 @@ function renderFavoriteTile(item, type) {
     <article class="mini-card" style="${image ? "" : coverVars(title)}">
       ${
         type === "show"
-          ? `<button data-action="open-show" data-id="${escapeAttr(item.id)}">${body}</button>`
-          : `<button data-action="open-movie" data-id="${escapeAttr(item.id)}">${body}</button>`
+          ? `<button class="card-trigger" data-action="open-show" data-id="${escapeAttr(item.id)}">${body}</button>`
+          : `<button class="card-trigger" data-action="open-movie" data-id="${escapeAttr(item.id)}">${body}</button>`
       }
     </article>
   `;
@@ -893,8 +1129,8 @@ function renderImportedLists(lists) {
     <section class="section">
       <div class="section-header">
         <div>
-          <h3>Listas importadas</h3>
-          <p>Listas originais recuperadas do TV Time</p>
+          <h3>Imported lists</h3>
+          <p>Custom collections imported from TV Time</p>
         </div>
         ${renderCollapseButton(collapseId)}
       </div>
@@ -903,7 +1139,7 @@ function renderImportedLists(lists) {
           ? ""
           : lists.length
             ? `<div class="list-grid">${lists.map((list) => renderImportedListCard(list)).join("")}</div>`
-            : `<div class="empty">Nenhuma lista importada.</div>`
+            : `<div class="empty">No imported lists found.</div>`
       }
     </section>
   `;
@@ -916,15 +1152,15 @@ function renderImportedListCard(list) {
     <article class="list-card">
       <div class="card-body">
         <h3>${escapeHtml(list.name)}</h3>
-        <p class="card-meta">${formatCount(items.length)} itens</p>
+        <p class="card-meta">${formatCount(items.length)} items</p>
         <div class="badges">
-          <span class="badge teal">${items.filter((item) => item.type === "show").length} séries</span>
-          <span class="badge gold">${items.filter((item) => item.type === "movie").length} filmes</span>
+          <span class="badge cyan">${items.filter((item) => item.type === "show").length} shows</span>
+          <span class="badge gold">${items.filter((item) => item.type === "movie").length} movies</span>
         </div>
         ${
           resolvedItems.length
             ? `<div class="list-items">${resolvedItems.map((item) => `<span>${escapeHtml(item.title)}</span>`).join("")}</div>`
-            : `<p class="card-meta">Itens sem correspondência local.</p>`
+            : `<p class="card-meta">Items without a local match.</p>`
         }
       </div>
     </article>
@@ -959,67 +1195,220 @@ function renderSyncView() {
   return `
     <section class="sync-panel">
       <div class="settings-block">
-        <h3>Google Drive</h3>
-        <div class="status-line">
+        <h3>Google Drive Cloud Synchronization</h3>
+        <p class="card-meta">Connect your Google Drive account to automatically backup and sync your entire watch history across devices.</p>
+        <div class="status-line" style="margin: 14px 0 10px;">
           <span class="status-dot ${state.driveSaving ? "ok pulse" : hasPendingDriveSave() ? "warn" : hasDrive ? "ok" : "warn"}" data-drive-sync-dot></span>
-          <span data-drive-sync-status>${hasDrive ? driveStatusLabel() : "Arquivo ainda não conectado"}</span>
+          <span data-drive-sync-status>${hasDrive ? driveStatusLabel() : "No file connected yet"}</span>
         </div>
         <div class="settings-row">
           <input class="input" data-input="google-client-id" value="${escapeAttr(clientId)}" autocomplete="off" spellcheck="false" inputmode="url" placeholder="Google OAuth Client ID" />
           <button class="button primary" data-action="connect-drive">
             <i data-lucide="key-round"></i>
-            Conectar
+            Connect
           </button>
         </div>
-        ${clientId ? `<p class="card-meta">Client ID salvo: ${escapeHtml(summarizeClientId(clientId))}</p>` : ""}
+        ${clientId ? `<p class="card-meta">Saved Client ID: ${escapeHtml(summarizeClientId(clientId))}</p>` : ""}
         <div class="detail-actions">
           <button class="button teal" data-action="save-drive" data-manual-drive-save ${state.driveSaving ? "disabled" : ""}>
             <i data-lucide="cloud-upload"></i>
-            Salvar no Drive
+            Save to Drive Now
           </button>
           <button class="button" data-action="load-drive">
             <i data-lucide="cloud-download"></i>
-            Carregar do Drive
+            Restore from Drive
           </button>
           <button class="button ghost" data-action="export-json">
             <i data-lucide="download"></i>
-            Baixar JSON
+            Download Local Backup (JSON)
           </button>
         </div>
         ${hasDrive ? `<p class="card-meta" data-drive-sync-summary>${driveSyncSummary()}</p>` : ""}
       </div>
+
       <div class="settings-block">
-        <h3>Capas de filmes</h3>
-        <div class="status-line">
+        <h3>TMDb Metadata & High-Res Posters</h3>
+        <p class="card-meta">Configure The Movie Database (TMDb) API token to automatically pull movie covers, release years, synopses, and user ratings.</p>
+        <div class="status-line" style="margin: 14px 0 10px;">
           <span class="status-dot ${tmdbToken ? "ok" : "warn"}"></span>
-          <span>${tmdbToken ? "TMDb configurado" : "TMDb Read Access Token pendente"}</span>
+          <span>${tmdbToken ? "TMDb configured & active" : "TMDb Read Access Token pending"}</span>
         </div>
         <div class="settings-row">
-          <input class="input" data-input="tmdb-token" type="password" value="${escapeAttr(tmdbToken)}" placeholder="TMDb Read Access Token" />
+          <input class="input" data-input="tmdb-token" type="password" value="${escapeAttr(tmdbToken)}" placeholder="TMDb Read Access Token (Bearer Token)" />
           <button class="button" data-action="posters-force">
             <i data-lucide="image"></i>
-            Buscar capas e dados
+            Fetch metadata
           </button>
         </div>
       </div>
+
       <div class="settings-block">
-        <h3>Importar arquivo</h3>
+        <h3>Import & Reset Data</h3>
+        <p class="card-meta">Import a previously exported JSON backup file or restore the original TV Time dataset.</p>
         <div class="settings-row">
           <input class="input" type="file" accept="application/json,.json" data-input="import-json" />
           <button class="button" data-action="reset-seed">
             <i data-lucide="rotate-ccw"></i>
-            Restaurar importação
+            Restore original import
           </button>
         </div>
       </div>
+
       <div class="settings-block">
-        <h3>Estado local</h3>
+        <h3>Local Database Status</h3>
         <p class="card-meta">
-          Atualizado em ${formatDateTime(state.data.updatedAt)} · ${formatCount(state.data.localChanges?.length || 0)} alterações locais.
+          Watchline ${APP_VERSION} · Database updated: ${formatDateTime(state.data.updatedAt)} · ${formatCount(state.data.localChanges?.length || 0)} local changes recorded.
         </p>
       </div>
     </section>
   `;
+}
+
+// Toast Notifications
+function showToast(message, type = "info", duration = 3500) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  
+  const iconMap = {
+    info: "info",
+    success: "check-circle",
+    warn: "alert-triangle",
+    error: "alert-octagon",
+  };
+  
+  toast.innerHTML = `
+    <i data-lucide="${iconMap[type] || "info"}"></i>
+    <span class="toast-msg">${escapeHtml(message)}</span>
+    <button class="toast-close" title="Close">✕</button>
+  `;
+  
+  container.appendChild(toast);
+  refreshIcons();
+  
+  const remove = () => {
+    toast.classList.add("hiding");
+    window.setTimeout(() => toast.remove(), 200);
+  };
+  
+  toast.querySelector(".toast-close").addEventListener("click", remove);
+  window.setTimeout(remove, duration);
+}
+
+// Command Palette
+function toggleCommandPalette() {
+  if (state.commandPaletteOpen) {
+    closeCommandPalette();
+  } else {
+    openCommandPalette();
+  }
+}
+
+function openCommandPalette() {
+  state.commandPaletteOpen = true;
+  state.commandQuery = "";
+  renderCommandPalette();
+  const input = document.getElementById("cmd-search-input");
+  if (input) input.focus();
+}
+
+function closeCommandPalette() {
+  state.commandPaletteOpen = false;
+  state.commandQuery = "";
+  const container = document.getElementById("command-palette-container");
+  if (container) container.innerHTML = "";
+}
+
+function renderCommandPalette() {
+  const container = document.getElementById("command-palette-container");
+  if (!container) return;
+  if (!state.commandPaletteOpen) {
+    container.innerHTML = "";
+    return;
+  }
+  
+  const q = normalizeText(state.commandQuery);
+  const shows = getShows().filter((s) => !q || normalizeText(s.title).includes(q)).slice(0, 5);
+  const movies = getMovies().filter((m) => !q || normalizeText(m.title).includes(q)).slice(0, 5);
+  
+  container.innerHTML = `
+    <div class="cmd-palette-backdrop" data-action="close-cmd-palette">
+      <div class="cmd-palette-modal" onclick="event.stopPropagation()">
+        <div class="cmd-search-row">
+          <i data-lucide="search"></i>
+          <input id="cmd-search-input" class="cmd-search-input" placeholder="Type a command or search shows & movies..." value="${escapeAttr(state.commandQuery)}" autocomplete="off" />
+          <span class="cmd-k-badge">ESC</span>
+        </div>
+        <div class="cmd-results-list">
+          ${
+            shows.length
+              ? `<div class="cmd-group-label">Shows</div>
+                ${shows
+                  .map(
+                    (s) => `
+                    <div class="cmd-item" data-action="cmd-select-show" data-id="${escapeAttr(s.id)}">
+                      <i data-lucide="tv"></i>
+                      <span>${escapeHtml(s.title)}</span>
+                      <span class="cmd-item-meta">${watchedCount(s)} eps</span>
+                    </div>
+                  `,
+                  )
+                  .join("")}`
+              : ""
+          }
+          ${
+            movies.length
+              ? `<div class="cmd-group-label">Movies</div>
+                ${movies
+                  .map(
+                    (m) => `
+                    <div class="cmd-item" data-action="cmd-select-movie" data-id="${escapeAttr(m.id)}">
+                      <i data-lucide="film"></i>
+                      <span>${escapeHtml(m.title)}</span>
+                      <span class="cmd-item-meta">${m.watched ? "Watched" : "Watchlist"}</span>
+                    </div>
+                  `,
+                  )
+                  .join("")}`
+              : ""
+          }
+          ${
+            q
+              ? `<div class="cmd-group-label">Online Database</div>
+                <div class="cmd-item" data-action="cmd-search-tvmaze" data-query="${escapeAttr(state.commandQuery)}">
+                  <i data-lucide="globe"></i>
+                  <span>Search TVmaze for "<strong>${escapeHtml(state.commandQuery)}</strong>"</span>
+                </div>`
+              : `<div class="cmd-group-label">Navigation</div>
+                <div class="cmd-item" data-action="cmd-nav" data-view="home"><i data-lucide="layout-dashboard"></i><span>Home Dashboard</span></div>
+                <div class="cmd-item" data-action="cmd-nav" data-view="shows"><i data-lucide="tv"></i><span>Shows Library</span></div>
+                <div class="cmd-item" data-action="cmd-nav" data-view="movies"><i data-lucide="film"></i><span>Movies Library</span></div>
+                <div class="cmd-item" data-action="cmd-nav" data-view="add-show"><i data-lucide="plus-circle"></i><span>Add New Show</span></div>
+                <div class="cmd-item" data-action="cmd-nav" data-view="sync"><i data-lucide="cloud"></i><span>Google Drive & Settings</span></div>`
+          }
+        </div>
+        <div class="cmd-footer">
+          <span>Tip: Use <strong>/</strong> key anytime to focus search</span>
+          <span>Watchline ${APP_VERSION}</span>
+        </div>
+      </div>
+    </div>
+  `;
+  refreshIcons();
+  
+  const input = document.getElementById("cmd-search-input");
+  if (input) {
+    input.addEventListener("input", (e) => {
+      state.commandQuery = e.target.value;
+      renderCommandPalette();
+      const nextInput = document.getElementById("cmd-search-input");
+      if (nextInput) {
+        nextInput.focus();
+        nextInput.setSelectionRange(nextInput.value.length, nextInput.value.length);
+      }
+    });
+  }
 }
 
 let librarySearchTimer = null;
@@ -1072,6 +1461,11 @@ function bindDynamicControls() {
       state.settings.tmdbToken = event.target.value.trim();
       saveSettings();
     });
+    node.addEventListener("change", () => {
+      if (!state.settings.tmdbToken) return;
+      startAutoCatalogSync();
+      startMoviePosterSync();
+    });
   });
   document.querySelectorAll("[data-input='import-json']").forEach((node) => {
     node.addEventListener("change", importJsonFile);
@@ -1089,7 +1483,7 @@ function bindDynamicControls() {
   bindScrollerGuards();
 }
 
-function scheduleLibrarySearchRefresh(delay = 280) {
+function scheduleLibrarySearchRefresh(delay = 240) {
   window.clearTimeout(librarySearchTimer);
   librarySearchTimer = window.setTimeout(refreshLibrarySearchResults, delay);
 }
@@ -1144,6 +1538,54 @@ function bindScrollerGuards() {
 async function handleAction(event) {
   const button = event.currentTarget;
   const action = button.dataset.action;
+  
+  if (action === "open-cmd-palette") {
+    openCommandPalette();
+    return;
+  }
+  if (action === "close-cmd-palette") {
+    closeCommandPalette();
+    return;
+  }
+  if (action === "cmd-select-show") {
+    state.selectedShowId = button.dataset.id;
+    state.selectedMovieId = null;
+    state.view = "shows";
+    closeCommandPalette();
+    render();
+    return;
+  }
+  if (action === "cmd-select-movie") {
+    state.selectedMovieId = button.dataset.id;
+    state.selectedShowId = null;
+    state.view = "movies";
+    closeCommandPalette();
+    render();
+    return;
+  }
+  if (action === "cmd-nav") {
+    state.view = button.dataset.view;
+    state.selectedShowId = null;
+    state.selectedMovieId = null;
+    closeCommandPalette();
+    render();
+    return;
+  }
+  if (action === "cmd-search-tvmaze") {
+    state.addShowQuery = button.dataset.query || "";
+    state.view = "add-show";
+    state.selectedShowId = null;
+    state.selectedMovieId = null;
+    closeCommandPalette();
+    render();
+    searchTvmaze();
+    return;
+  }
+  if (action === "clear-search") {
+    state.search = "";
+    render();
+    return;
+  }
   if (action === "view") {
     state.view = button.dataset.view;
     state.selectedShowId = null;
@@ -1181,10 +1623,13 @@ async function handleAction(event) {
   }
   if (action === "catalog-force") {
     startAutoCatalogSync({ force: true });
+    showToast("Checking TVmaze for online episode updates...", "info");
     return;
   }
   if (action === "posters-force") {
+    startAutoCatalogSync();
     startMoviePosterSync({ force: true });
+    showToast("Refreshing movie posters from TMDb...", "info");
     return;
   }
   if (action === "open-show") {
@@ -1225,6 +1670,30 @@ async function handleAction(event) {
   if (action === "episode-filter") {
     state.episodeFilter = button.dataset.filter;
     render();
+    return;
+  }
+  if (action === "quick-watch-next") {
+    event.stopPropagation();
+    await markNextEpisode(button.dataset.id);
+    return;
+  }
+  if (action === "quick-toggle-fav") {
+    event.stopPropagation();
+    await toggleShowField(button.dataset.id, "favorite");
+    return;
+  }
+  if (action === "quick-toggle-movie-watched") {
+    event.stopPropagation();
+    await toggleMovieField(button.dataset.id, "watched");
+    return;
+  }
+  if (action === "quick-toggle-movie-fav") {
+    event.stopPropagation();
+    await toggleMovieField(button.dataset.id, "favorite");
+    return;
+  }
+  if (action === "mark-season-watched") {
+    await markSeasonWatched(button.dataset.id, Number(button.dataset.season));
     return;
   }
   if (action === "toggle-show") {
@@ -1268,7 +1737,7 @@ async function handleAction(event) {
     return;
   }
   if (action === "reset-seed") {
-    const confirmed = window.confirm("Restaurar a importação original neste aparelho? As alterações locais atuais serão substituídas, mas o arquivo do Drive não será alterado automaticamente.");
+    const confirmed = window.confirm("Restore original TV Time import on this device? Local changes will be replaced, but Google Drive file is kept untouched.");
     if (!confirmed) return;
     await resetToSeed();
     return;
@@ -1278,21 +1747,42 @@ async function handleAction(event) {
   }
 }
 
+async function markSeasonWatched(showId, season) {
+  const show = getShows().find((item) => item.id === showId);
+  if (!show || !hasCatalog(show)) return;
+  const seasonEpisodes = (show.catalogEpisodes || []).filter((ep) => Number(ep.season) === season);
+  let countAdded = 0;
+  for (const ep of seasonEpisodes) {
+    if (!isEpisodeWatched(show, ep)) {
+      addEpisode(show, ep.season, ep.number, { catalogEpisode: ep });
+      countAdded += 1;
+    }
+  }
+  show.episodesSeenCount = watchedCount(show);
+  show.updatedAt = new Date().toISOString();
+  addLocalChange("season:watched", { showId: show.id, season, count: countAdded });
+  await persistAndRender(`Season ${season} marked as watched (${countAdded} episodes)`);
+  showToast(`Season ${season} marked as watched!`, "success");
+}
+
 async function searchTvmaze() {
   const query = state.addShowQuery.trim();
   if (!query) {
-    state.notice = "Digite o nome de uma série.";
+    state.notice = "Enter a show name to search.";
+    showToast("Please enter a show name", "warn");
     render();
     return;
   }
   state.busy = true;
-  state.notice = "Buscando séries...";
+  state.notice = `Searching TVmaze for "${query}"...`;
   render();
   try {
     state.addShowResults = await searchTvmazeShows(query, { expanded: true });
-    state.notice = state.addShowResults.length ? "Escolha a série correta." : "Nenhum resultado encontrado.";
+    state.notice = state.addShowResults.length ? `Found ${state.addShowResults.length} shows.` : "No shows found.";
+    showToast(`Found ${state.addShowResults.length} shows`, state.addShowResults.length ? "success" : "info");
   } catch (error) {
     state.notice = `TVmaze: ${error.message}`;
+    showToast(`TVmaze search error: ${error.message}`, "error");
   } finally {
     state.busy = false;
     render();
@@ -1303,13 +1793,14 @@ async function addTvmazeShow(tvmazeId) {
   const result = state.addShowResults.find((item) => item.show.id === tvmazeId);
   if (!result) return;
   state.busy = true;
-  state.notice = "Carregando episódios...";
+  state.notice = `Importing ${result.show.name}...`;
   render();
   try {
     const episodes = await fetchTvmazeEpisodes(tvmazeId);
     const existing = findExistingShowForTvmaze(result.show);
     const show = existing || createShowFromTvmaze(result.show);
     mergeTvmazeData(show, result.show, episodes);
+    await updateShowEnglishMetadataIfConfigured(show, result.show);
     if (!existing) {
       state.data.shows = [...getShows(), show].sort((a, b) => a.title.localeCompare(b.title));
     }
@@ -1320,9 +1811,11 @@ async function addTvmazeShow(tvmazeId) {
     state.selectedMovieId = null;
     state.view = "shows";
     await persist("add-tvmaze-show", { autosave: true });
-    state.notice = `${show.title} adicionada com ${episodes.length} episódios.`;
+    state.notice = `${show.title} added with ${episodes.length} episodes.`;
+    showToast(`Added ${show.title} (${episodes.length} eps)`, "success");
   } catch (error) {
     state.notice = `TVmaze: ${error.message}`;
+    showToast(`Failed to add show: ${error.message}`, "error");
   } finally {
     state.busy = false;
     render();
@@ -1333,14 +1826,16 @@ async function fetchCatalogForShow(id) {
   const show = getShows().find((item) => item.id === id);
   if (!show) return;
   state.catalogLoading = true;
-  state.notice = `Buscando episódios de ${show.title}...`;
+  state.notice = `Fetching episodes for ${show.title}...`;
   render();
   try {
     const count = await updateCatalogForShow(show);
     await persist("fetch-catalog", { autosave: true });
-    state.notice = `${count} episódios carregados para ${show.title}.`;
+    state.notice = `${count} episodes loaded for ${show.title}.`;
+    showToast(`Updated ${show.title} (${count} episodes)`, "success");
   } catch (error) {
     state.notice = `TVmaze: ${error.message}`;
+    showToast(`Catalog error: ${error.message}`, "error");
   } finally {
     state.catalogLoading = false;
     render();
@@ -1350,10 +1845,11 @@ async function fetchCatalogForShow(id) {
 async function updateCatalogForShow(show) {
   const resolved = await resolveTvmazeCatalog(show);
   if (!resolved) {
-    throw new Error("Não encontrei uma correspondência confiável.");
+    throw new Error("No reliable match was found.");
   }
   const { tvmazeShow, episodes } = resolved;
   mergeTvmazeData(show, tvmazeShow, episodes);
+  await updateShowEnglishMetadataIfConfigured(show, tvmazeShow);
   addLocalChange("show:catalog-tvmaze", { id: show.id, tvmazeId: tvmazeShow.id, episodes: episodes.length });
   return episodes.length;
 }
@@ -1382,7 +1878,8 @@ function startMoviePosterSync({ force = false } = {}) {
   if (!state.data || state.posterSync.running) return;
   if (!state.settings.tmdbToken) {
     if (force) {
-      state.notice = "Informe o TMDb Read Access Token para buscar capas de filmes.";
+      state.notice = "Enter a TMDb Read Access Token in Cloud & Storage to fetch metadata.";
+      showToast("TMDb token required in Cloud & Storage", "warn");
       render();
     }
     return;
@@ -1407,24 +1904,28 @@ async function fetchMovieDetailsForMovie(id) {
   const movie = getMovies().find((item) => item.id === id);
   if (!movie) return;
   if (!state.settings.tmdbToken) {
-    state.notice = "Informe o TMDb Read Access Token para buscar sinopse e detalhes.";
+    state.notice = "Enter a TMDb Read Access Token in Cloud & Storage.";
+    showToast("TMDb token required in Cloud & Storage", "warn");
     render();
     return;
   }
   state.busy = true;
-  state.notice = `Buscando detalhes de ${movie.title}...`;
+  state.notice = `Fetching details for ${movie.title}...`;
   render();
   try {
     const found = await updateMovieFromTmdb(movie, { includeDetails: true });
     if (!found) {
-      state.notice = `TMDb: não encontrei ${movie.title}.`;
+      state.notice = `TMDb: ${movie.title} was not found.`;
+      showToast(`TMDb: ${movie.title} not found`, "warn");
     } else {
       addLocalChange("movie:details-tmdb", { id: movie.id, tmdbId: movie.external?.tmdbId || null });
       await persist("movie-details", { autosave: true });
-      state.notice = `Detalhes atualizados para ${movie.title}.`;
+      state.notice = `Details updated for ${movie.title}.`;
+      showToast(`Updated details for ${movie.title}`, "success");
     }
   } catch (error) {
     state.notice = `TMDb: ${error.message}`;
+    showToast(`TMDb error: ${error.message}`, "error");
   } finally {
     state.busy = false;
     render();
@@ -1453,11 +1954,12 @@ async function runMoviePosterQueue(candidates) {
   state.posterSync.running = false;
   state.posterSync.lastTitle = "";
   await persist("movie-posters", { autosave: true });
-  state.notice = `Capas de filmes atualizadas: ${state.posterSync.updated}; falhas: ${state.posterSync.failed}.`;
+  state.notice = `Movie metadata updated: ${state.posterSync.updated}; failures: ${state.posterSync.failed}.`;
   render();
 }
 
 function shouldRefreshMoviePoster(movie) {
+  if (movie.metadataLanguageVersion !== MOVIE_METADATA_LANGUAGE_VERSION) return true;
   if (mediaImage(movie) && (movie.summary || movie.overview) && movie.genres?.length) return false;
   const updatedAt = parseDateValue(movie.posterUpdatedAt);
   if (!updatedAt) return true;
@@ -1470,13 +1972,15 @@ async function fetchMoviePoster(movie) {
 }
 
 async function updateMovieFromTmdb(movie, { includeDetails = false } = {}) {
-  const result = await findTmdbMovie(movie);
+  const needsEnglishMetadata = movie.metadataLanguageVersion !== MOVIE_METADATA_LANGUAGE_VERSION;
+  let result = movie.external?.tmdbId ? await fetchTmdbMovieDetails(movie.external.tmdbId) : await findTmdbMovie(movie);
   if (!result) return false;
   mergeTmdbMovieData(movie, result);
-  if (includeDetails) {
+  if ((includeDetails || needsEnglishMetadata) && !result.runtime) {
     const details = await fetchTmdbMovieDetails(result.id);
     mergeTmdbMovieData(movie, details);
   }
+  movie.metadataLanguageVersion = MOVIE_METADATA_LANGUAGE_VERSION;
   movie.posterUpdatedAt = new Date().toISOString();
   movie.updatedAt = new Date().toISOString();
   return true;
@@ -1486,7 +1990,7 @@ async function findTmdbMovie(movie) {
   const params = new URLSearchParams({
     query: movie.title,
     include_adult: "false",
-    language: "pt-BR",
+    language: TMDB_LANGUAGE,
   });
   const year = mediaYear(movie.releaseDate);
   if (year) params.set("year", year);
@@ -1500,7 +2004,7 @@ async function findTmdbMovie(movie) {
 }
 
 async function fetchTmdbMovieDetails(tmdbId) {
-  const response = await fetch(`${TMDB_API}/movie/${encodeURIComponent(tmdbId)}?language=pt-BR`, {
+  const response = await fetch(`${TMDB_API}/movie/${encodeURIComponent(tmdbId)}?language=${TMDB_LANGUAGE}`, {
     headers: {
       Authorization: `Bearer ${state.settings.tmdbToken}`,
       Accept: "application/json",
@@ -1512,11 +2016,16 @@ async function fetchTmdbMovieDetails(tmdbId) {
 
 function mergeTmdbMovieData(movie, tmdbMovie) {
   const poster = tmdbMovie.poster_path ? `${TMDB_IMAGE}${tmdbMovie.poster_path}` : null;
+  const originalLanguage = tmdbMovie.original_language || movie.originalLanguage || null;
+  const preferredTitle = tmdbMovie.title || tmdbMovie.original_title;
+  movie.importedTitle = movie.importedTitle || movie.title || null;
+  movie.title = preferredTitle || movie.title;
   movie.poster = poster || movie.poster || null;
   movie.image = movie.poster || movie.image || null;
   movie.summary = tmdbMovie.overview || movie.summary || movie.overview || null;
   movie.overview = movie.summary;
   movie.originalTitle = tmdbMovie.original_title || movie.originalTitle || null;
+  movie.originalLanguage = originalLanguage;
   movie.releaseDate = normalizeMovieReleaseDate(movie.releaseDate, tmdbMovie.release_date);
   movie.runtimeSeconds = tmdbMovie.runtime ? Number(tmdbMovie.runtime) * 60 : movie.runtimeSeconds || null;
   movie.rating = Number(tmdbMovie.vote_average || movie.rating || 0) || null;
@@ -1590,7 +2099,7 @@ async function runCatalogQueue(candidates) {
   state.catalogSync.running = false;
   state.catalogSync.lastTitle = "";
   await persist("catalog-auto", { autosave: true });
-  state.notice = `Catálogos atualizados: ${state.catalogSync.updated}; falhas: ${state.catalogSync.failed}.`;
+  state.notice = `Show catalogs updated: ${state.catalogSync.updated}; failures: ${state.catalogSync.failed}.`;
   render();
 }
 
@@ -1600,6 +2109,7 @@ function isRelevantShow(show) {
 
 function shouldRefreshCatalog(show) {
   if (!hasCatalog(show)) return true;
+  if (state.settings.tmdbToken && show.metadataLookupVersion !== SHOW_METADATA_LANGUAGE_VERSION) return true;
   const updatedAt = parseDateValue(show.catalogUpdatedAt);
   if (!updatedAt) return true;
   return Date.now() - updatedAt > 24 * 60 * 60 * 1000;
@@ -1882,13 +2392,16 @@ function createShowFromTvmaze(tvmazeShow) {
 }
 
 function mergeTvmazeData(show, tvmazeShow, episodes) {
-  show.title = show.title || tvmazeShow.name;
+  const hasLocalizedMetadata = show.metadataLanguageVersion === SHOW_METADATA_LANGUAGE_VERSION;
+  show.importedTitle = show.importedTitle || show.title || null;
+  show.originalTitle = tvmazeShow.name || show.originalTitle || null;
+  if (!hasLocalizedMetadata) show.title = tvmazeShow.name || show.title;
   show.image = tvmazeShow.image?.medium || tvmazeShow.image?.original || show.image || null;
-  show.summary = stripHtml(tvmazeShow.summary || show.summary || "");
+  if (!hasLocalizedMetadata) show.summary = stripHtml(tvmazeShow.summary || show.summary || "");
   show.status = tvmazeShow.status || show.status || null;
   show.premiered = tvmazeShow.premiered || show.premiered || null;
   show.ended = tvmazeShow.ended || show.ended || null;
-  show.genres = tvmazeShow.genres || show.genres || [];
+  if (!hasLocalizedMetadata) show.genres = tvmazeShow.genres || show.genres || [];
   show.language = tvmazeShow.language || show.language || null;
   show.external = {
     ...(show.external || {}),
@@ -1902,6 +2415,103 @@ function mergeTvmazeData(show, tvmazeShow, episodes) {
   show.catalogEpisodes = episodes.map(mapTvmazeEpisode).sort((a, b) => a.season - b.season || a.number - b.number);
   show.catalogUpdatedAt = new Date().toISOString();
   show.updatedAt = new Date().toISOString();
+}
+
+async function updateShowEnglishMetadataIfConfigured(show, tvmazeShow) {
+  if (!state.settings.tmdbToken) return false;
+  try {
+    const tmdbShow = await findTmdbShow(show, tvmazeShow);
+    show.metadataLookupVersion = SHOW_METADATA_LANGUAGE_VERSION;
+    if (!tmdbShow) return false;
+    const details = tmdbShow.number_of_seasons ? tmdbShow : await fetchTmdbShowDetails(tmdbShow.id);
+    mergeTmdbShowData(show, details);
+    show.metadataError = null;
+    return true;
+  } catch (error) {
+    show.metadataLookupVersion = SHOW_METADATA_LANGUAGE_VERSION;
+    show.metadataError = error.message;
+    return false;
+  }
+}
+
+async function findTmdbShow(show, tvmazeShow) {
+  if (show.external?.tmdbId) return fetchTmdbShowDetails(show.external.tmdbId);
+  const imdbId = tvmazeShow?.externals?.imdb || show.external?.imdbId;
+  if (imdbId) {
+    const response = await tmdbFetch(`/find/${encodeURIComponent(imdbId)}?external_source=imdb_id&language=${TMDB_LANGUAGE}`);
+    const result = response.tv_results?.[0];
+    if (result) return result;
+  }
+
+  const params = new URLSearchParams({
+    query: tvmazeShow?.name || show.title,
+    include_adult: "false",
+    language: TMDB_LANGUAGE,
+  });
+  const year = mediaYear(tvmazeShow?.premiered || show.premiered);
+  if (year) params.set("first_air_date_year", year);
+  let results = (await tmdbFetch(`/search/tv?${params.toString()}`)).results || [];
+  if (!results.length && year) {
+    params.delete("first_air_date_year");
+    results = (await tmdbFetch(`/search/tv?${params.toString()}`)).results || [];
+  }
+  return bestTmdbShowMatch(show, tvmazeShow, results);
+}
+
+function bestTmdbShowMatch(show, tvmazeShow, results) {
+  const referenceTitles = [show.title, show.importedTitle, tvmazeShow?.name].filter(Boolean).map(normalizeTitle).filter(Boolean);
+  const referenceYear = mediaYear(tvmazeShow?.premiered || show.premiered);
+  const best = results
+    .map((result) => {
+      const titles = [result.name, result.original_name].filter(Boolean).map(normalizeTitle).filter(Boolean);
+      const titleScore = Math.max(
+        0,
+        ...referenceTitles.flatMap((reference) => titles.map((title) => (title === reference ? 8 : title.includes(reference) || reference.includes(title) ? 3 : tokenOverlapScore(title, reference) * 4))),
+      );
+      const year = mediaYear(result.first_air_date);
+      return { result, score: titleScore + (referenceYear && year === referenceYear ? 5 : 0) + (result.poster_path ? 1 : 0) };
+    })
+    .sort((a, b) => b.score - a.score)[0];
+  return best?.score >= 3 ? best.result : null;
+}
+
+async function fetchTmdbShowDetails(tmdbId) {
+  return tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}?language=${TMDB_LANGUAGE}`);
+}
+
+async function tmdbFetch(path) {
+  const response = await fetch(`${TMDB_API}${path}`, {
+    headers: {
+      Authorization: `Bearer ${state.settings.tmdbToken}`,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) throw new Error(response.statusText);
+  return response.json();
+}
+
+function mergeTmdbShowData(show, tmdbShow) {
+  const originalLanguage = tmdbShow.original_language || show.originalLanguage || null;
+  const preferredTitle = isPortugueseOriginal(originalLanguage)
+    ? tmdbShow.original_name || tmdbShow.name
+    : tmdbShow.name || tmdbShow.original_name;
+  show.title = preferredTitle || show.title;
+  show.originalTitle = tmdbShow.original_name || show.originalTitle || null;
+  show.originalLanguage = originalLanguage;
+  show.summary = tmdbShow.overview || show.summary || "";
+  show.genres = tmdbShow.genres?.length ? tmdbShow.genres.map((genre) => genre.name).filter(Boolean) : show.genres || [];
+  show.metadataLanguageVersion = SHOW_METADATA_LANGUAGE_VERSION;
+  show.metadataLookupVersion = SHOW_METADATA_LANGUAGE_VERSION;
+  show.external = {
+    ...(show.external || {}),
+    tmdbId: tmdbShow.id || show.external?.tmdbId || null,
+    tmdbTitle: tmdbShow.name || tmdbShow.original_name || show.external?.tmdbTitle || null,
+    tmdbOriginalLanguage: originalLanguage,
+  };
+}
+
+function isPortugueseOriginal(language) {
+  return String(language || "").toLowerCase().split("-")[0] === "pt";
 }
 
 function mapTvmazeEpisode(episode) {
@@ -1926,15 +2536,24 @@ async function toggleShowField(id, field) {
   show[field] = !show[field];
   show.updatedAt = new Date().toISOString();
   addLocalChange("show:update", { id, field, value: show[field] });
-  await persistAndRender(`Série atualizada: ${show.title}`);
+  const label = field === "favorite" ? (show.favorite ? "Added to favorites" : "Removed from favorites") : `Show updated: ${show.title}`;
+  await persistAndRender(label);
+  showToast(label, show[field] ? "success" : "info");
 }
 
 async function markNextEpisode(id) {
   const show = getShows().find((item) => item.id === id);
   if (!show) return;
   const next = nextEpisode(show);
+  if (!next) {
+    state.notice = `${show.title} has no released episode left to watch.`;
+    showToast(`${show.title} is all caught up!`, "info");
+    render();
+    return;
+  }
   addEpisode(show, next.season, next.number, { catalogEpisode: next });
-  await persistAndRender(`Marcado S${next.season}E${next.number}: ${show.title}`);
+  await persistAndRender(`Marked S${next.season}E${next.number}: ${show.title}`);
+  showToast(`Watched S${next.season}E${next.number} · ${show.title}`, "success");
 }
 
 function addEpisode(show, season, episode, options = {}) {
@@ -1971,10 +2590,12 @@ async function toggleEpisode(id, season, episode) {
     show.episodesSeenCount = watchedCount(show);
     show.updatedAt = new Date().toISOString();
     addLocalChange("episode:unwatched", { showId: show.id, season, episode });
-    await persistAndRender(`Desmarcado S${season}E${episode}: ${show.title}`);
+    await persistAndRender(`Unmarked S${season}E${episode}: ${show.title}`);
+    showToast(`Unmarked S${season}E${episode}`, "info");
   } else {
     addEpisode(show, season, episode, { catalogEpisode });
-    await persistAndRender(`Marcado S${season}E${episode}: ${show.title}`);
+    await persistAndRender(`Marked S${season}E${episode}: ${show.title}`);
+    showToast(`Watched S${season}E${episode}`, "success");
   }
 }
 
@@ -1985,7 +2606,8 @@ async function unwatchEpisode(id, season, episode) {
   show.episodesSeenCount = watchedCount(show);
   show.updatedAt = new Date().toISOString();
   addLocalChange("episode:unwatched", { showId: show.id, season, episode });
-  await persistAndRender(`Removido S${season}E${episode}: ${show.title}`);
+  await persistAndRender(`Removed S${season}E${episode}: ${show.title}`);
+  showToast(`Removed S${season}E${episode}`, "info");
 }
 
 async function toggleMovieField(id, field) {
@@ -1997,7 +2619,9 @@ async function toggleMovieField(id, field) {
   }
   movie.updatedAt = new Date().toISOString();
   addLocalChange("movie:update", { id, field, value: movie[field] });
-  await persistAndRender(`Filme atualizado: ${movie.title}`);
+  const label = field === "favorite" ? (movie.favorite ? "Movie added to favorites" : "Movie removed from favorites") : `Movie updated: ${movie.title}`;
+  await persistAndRender(label);
+  showToast(label, movie[field] ? "success" : "info");
 }
 
 async function persistAndRender(message) {
@@ -2038,7 +2662,7 @@ function scheduleDriveAutosave(delay = 850) {
   window.clearTimeout(autosaveTimer);
   autosaveTimer = window.setTimeout(() => {
     saveToDrive({ interactive: false }).catch((error) => {
-      state.notice = `Drive pendente: ${error.message}`;
+      state.notice = `Drive pending: ${error.message}`;
       refreshBackgroundStatus();
       refreshDriveStatus();
     });
@@ -2048,17 +2672,20 @@ function scheduleDriveAutosave(delay = 850) {
 async function connectDrive() {
   normalizeGoogleClientIdSetting();
   if (!state.settings.googleClientId) {
-    state.notice = "Informe o Google OAuth Client ID.";
+    state.notice = "Enter the Google OAuth Client ID.";
+    showToast("Google OAuth Client ID required", "warn");
     render();
     return;
   }
   try {
     await ensureDriveToken({ interactive: true });
-    state.notice = "Drive conectado.";
+    state.notice = "Drive connected successfully.";
+    showToast("Google Drive connected!", "success");
     render();
     if (hasPendingDriveSave()) scheduleDriveAutosave(0);
   } catch (error) {
     state.notice = `Drive: ${error.message}`;
+    showToast(`Google Drive: ${error.message}`, "error");
     render();
   }
 }
@@ -2066,7 +2693,8 @@ async function connectDrive() {
 async function saveToDrive({ interactive }) {
   normalizeGoogleClientIdSetting();
   if (!state.settings.googleClientId) {
-    state.notice = "Informe o Google OAuth Client ID.";
+    state.notice = "Enter the Google OAuth Client ID.";
+    showToast("Google OAuth Client ID required", "warn");
     render();
     return;
   }
@@ -2106,10 +2734,12 @@ async function saveToDrive({ interactive }) {
     }
     saveSettings();
     await idbSet(DATA_KEY, state.data);
-    state.notice = "Salvo no Google Drive.";
+    state.notice = "Saved to Google Drive.";
+    if (interactive) showToast("Saved to Google Drive!", "success");
     saveSucceeded = true;
   } catch (error) {
     state.notice = `Drive: ${error.message}`;
+    if (interactive) showToast(`Drive error: ${error.message}`, "error");
   } finally {
     state.driveSaving = false;
     const queued = state.driveSaveQueued;
@@ -2128,7 +2758,8 @@ async function saveToDrive({ interactive }) {
 async function loadFromDrive() {
   normalizeGoogleClientIdSetting();
   if (!state.settings.googleClientId) {
-    state.notice = "Informe o Google OAuth Client ID.";
+    state.notice = "Enter the Google OAuth Client ID.";
+    showToast("Google OAuth Client ID required", "warn");
     render();
     return;
   }
@@ -2138,7 +2769,8 @@ async function loadFromDrive() {
       ? { id: state.settings.driveFileId }
       : await findDriveFile();
     if (!file?.id) {
-      state.notice = "Arquivo nao encontrado no Drive.";
+      state.notice = "File not found in Drive.";
+      showToast("No tvtracker-data.json found in Drive", "warn");
       render();
       return;
     }
@@ -2151,10 +2783,14 @@ async function loadFromDrive() {
     state.settings.driveFileId = file.id;
     saveSettings();
     await idbSet(DATA_KEY, state.data);
-    state.notice = "Carregado do Google Drive.";
+    state.notice = "Loaded from Google Drive.";
+    showToast("Loaded data from Google Drive!", "success");
     render();
+    window.setTimeout(() => startAutoCatalogSync(), 0);
+    window.setTimeout(() => startMoviePosterSync(), 500);
   } catch (error) {
     state.notice = `Drive: ${error.message}`;
+    showToast(`Drive load error: ${error.message}`, "error");
     render();
   }
 }
@@ -2196,7 +2832,7 @@ async function waitForGoogleIdentity() {
   const started = Date.now();
   while (!window.google?.accounts?.oauth2) {
     if (Date.now() - started > 8000) {
-      throw new Error("Google Identity Services indisponivel.");
+      throw new Error("Google Identity Services is unavailable.");
     }
     await sleep(100);
   }
@@ -2263,9 +2899,10 @@ function exportJson() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `tvtracker-data-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `watchline-data-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
+  showToast("Watchline backup JSON downloaded", "success");
 }
 
 async function importJsonFile(event) {
@@ -2277,10 +2914,14 @@ async function importJsonFile(event) {
     state.data = data;
     addLocalChange("file:import", { name: file.name });
     await persist("import-json", { autosave: true });
-    state.notice = "Arquivo importado.";
+    state.notice = "File imported successfully.";
+    showToast(`Imported ${file.name}`, "success");
     render();
+    window.setTimeout(() => startAutoCatalogSync(), 0);
+    window.setTimeout(() => startMoviePosterSync(), 500);
   } catch (error) {
-    state.notice = `Importacao: ${error.message}`;
+    state.notice = `Import: ${error.message}`;
+    showToast(`Import error: ${error.message}`, "error");
     render();
   }
 }
@@ -2289,8 +2930,11 @@ async function resetToSeed() {
   state.data = await loadSeedData();
   state.data.stats = recomputeStats(state.data);
   await persist("reset-seed", { autosave: false });
-  state.notice = "Importacao original restaurada localmente.";
+  state.notice = "Original import restored locally.";
+  showToast("Original dataset restored", "info");
   render();
+  window.setTimeout(() => startAutoCatalogSync(), 0);
+  window.setTimeout(() => startMoviePosterSync(), 500);
 }
 
 function getShows() {
@@ -2305,14 +2949,26 @@ function filterShows() {
   const q = normalizeText(state.search);
   return getShows()
     .filter((show) => {
-      if (state.showFilter === "active" && !isActiveShow(show)) return false;
-      if (state.showFilter === "later" && !show.forLater) return false;
-      if (state.showFilter === "favorites" && !show.favorite) return false;
-      if (state.showFilter === "archived" && !show.archived) return false;
+      if (!matchesShowFilter(show, state.showFilter)) return false;
       if (state.showGenreFilter !== "all" && !hasGenre(show, state.showGenreFilter)) return false;
       return !q || normalizeText(show.title).includes(q);
     })
     .sort(compareShowsForTab);
+}
+
+function matchesShowFilter(show, filter) {
+  if (filter === "active") return isActiveShow(show);
+  if (filter === "later") return Boolean(show.forLater);
+  if (filter === "favorites") return Boolean(show.favorite);
+  if (filter === "archived") return Boolean(show.archived);
+  if (filter === "all") return true;
+  const trackingStatus = showTrackingStatus(show).key;
+  if (filter === "continuing") return trackingStatus === "continuing" || trackingStatus === "forgotten";
+  if (filter === "up-to-date") return trackingStatus === "up-to-date" || trackingStatus === "waiting";
+  if (filter === "waiting") return trackingStatus === "waiting";
+  if (filter === "forgotten") return trackingStatus === "forgotten";
+  if (filter === "completed") return trackingStatus === "completed";
+  return true;
 }
 
 function filterMovies() {
@@ -2396,7 +3052,7 @@ function groupCatalogEpisodes(show) {
 }
 
 function seasonLabel(season) {
-  return Number(season) === 0 ? "Especiais" : `Temporada ${season}`;
+  return Number(season) === 0 ? "Specials" : `Season ${season}`;
 }
 
 function seasonCollapseId(show, season) {
@@ -2442,10 +3098,102 @@ function lastEpisode(show) {
   return episodes[episodes.length - 1] || null;
 }
 
+function regularCatalogEpisodes(show) {
+  return (show.catalogEpisodes || []).filter(
+    (episode) => Number(episode.season || 0) > 0 && Number(episode.number || 0) > 0,
+  );
+}
+
+function availableCatalogEpisodes(show) {
+  const today = new Date().toISOString().slice(0, 10);
+  return regularCatalogEpisodes(show)
+    .filter((episode) => {
+      const airdate = String(episode.airdate || "").slice(0, 10);
+      return airdate ? airdate <= today : isEndedShow(show);
+    })
+    .sort((a, b) => Number(a.season || 0) - Number(b.season || 0) || Number(a.number || 0) - Number(b.number || 0));
+}
+
+function futureCatalogEpisodes(show) {
+  const today = new Date().toISOString().slice(0, 10);
+  return regularCatalogEpisodes(show)
+    .filter((episode) => String(episode.airdate || "").slice(0, 10) > today)
+    .sort((a, b) => String(a.airdate).localeCompare(String(b.airdate)) || Number(a.season) - Number(b.season) || Number(a.number) - Number(b.number));
+}
+
+function remainingAvailableEpisodes(show) {
+  const watched = new Set(uniqueEpisodes(show).map((episode) => `${episode.season}:${episode.number}`));
+  return availableCatalogEpisodes(show).filter((episode) => !watched.has(`${Number(episode.season)}:${Number(episode.number)}`));
+}
+
+function hasNextAvailableEpisode(show) {
+  if (!hasCatalog(show)) return true;
+  return remainingAvailableEpisodes(show).length > 0;
+}
+
+function isEndedShow(show) {
+  const status = normalizeText(show.status);
+  const endedAt = String(show.ended || "").slice(0, 10);
+  const endedByDate = /^\d{4}-\d{2}-\d{2}$/.test(endedAt) && endedAt <= new Date().toISOString().slice(0, 10);
+  return endedByDate || ["ended", "finalizada", "concluida", "cancelled", "canceled"].some((value) => status.includes(value));
+}
+
+function showTrackingStatus(show) {
+  const watched = watchedCount(show);
+  if (!hasCatalog(show) || regularCatalogEpisodes(show).length === 0) {
+    return watched
+      ? { key: "unknown", label: "No catalog", tone: "", description: "Update the episodes to calculate this show's status." }
+      : { key: "not-started", label: "Not started", tone: "", description: "No watched episodes." };
+  }
+
+  const remaining = remainingAvailableEpisodes(show);
+  const future = futureCatalogEpisodes(show);
+  if (isEndedShow(show) && remaining.length === 0) {
+    return { key: "completed", label: "Completed", tone: "teal", description: "Every episode of this ended show has been watched." };
+  }
+  if (!isEndedShow(show) && remaining.length === 0 && future.length > 0) {
+    return {
+      key: "waiting",
+      label: `Waiting · ${formatDate(future[0].airdate)}`,
+      tone: "gold",
+      description: "You are up to date and the next episode has a release date.",
+    };
+  }
+  if (!isEndedShow(show) && remaining.length === 0 && watched > 0) {
+    return { key: "up-to-date", label: "Up to date", tone: "teal", description: "Every released episode has been watched." };
+  }
+  if (remaining.length > 0 && watched > 0 && isForgottenShow(show)) {
+    return {
+      key: "forgotten",
+      label: `Forgotten · ${formatCount(remaining.length)}`,
+      tone: "red",
+      description: `There are unwatched episodes and no activity for at least ${FORGOTTEN_SHOW_DAYS} days.`,
+    };
+  }
+  if (remaining.length > 0 && watched > 0) {
+    return {
+      key: "continuing",
+      label: `Continue · ${formatCount(remaining.length)}`,
+      tone: "red",
+      description: `${formatCount(remaining.length)} released episodes have not been watched yet.`,
+    };
+  }
+  return { key: "not-started", label: "Not started", tone: "", description: "No watched episodes." };
+}
+
+function isForgottenShow(show) {
+  const lastWatched = lastWatchedTimestamp(show);
+  if (!lastWatched) return false;
+  return Date.now() - lastWatched >= FORGOTTEN_SHOW_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function renderShowTrackingBadge(status) {
+  return `<span class="badge ${status.tone}" title="${escapeAttr(status.description)}">${escapeHtml(status.label)}</span>`;
+}
+
 function nextEpisode(show) {
   if (hasCatalog(show)) {
-    const next = (show.catalogEpisodes || []).find((episode) => !isEpisodeWatched(show, episode));
-    if (next) return next;
+    return availableCatalogEpisodes(show).find((episode) => !isEpisodeWatched(show, episode)) || null;
   }
   const last = lastEpisode(show);
   if (!last) return { season: 1, number: 1 };
@@ -2535,7 +3283,7 @@ function extractGoogleClientId(value) {
 function summarizeClientId(value) {
   const id = extractGoogleClientId(value);
   const match = id.match(/^(\d+)-(.+)\.apps\.googleusercontent\.com$/);
-  if (!match) return id || "não informado";
+  if (!match) return id || "not provided";
   const prefix = `${match[1]}-`;
   const body = match[2];
   return `${prefix}${body.slice(0, 6)}...${body.slice(-5)}.apps.googleusercontent.com`;
@@ -2610,14 +3358,14 @@ function refreshIcons() {
 }
 
 function formatCount(value) {
-  return new Intl.NumberFormat("pt-BR").format(Number(value || 0));
+  return new Intl.NumberFormat("en-US").format(Number(value || 0));
 }
 
 function formatDateTime(value) {
-  if (!value) return "sem data";
+  if (!value) return "no date";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "short", timeStyle: "short" }).format(date);
 }
 
 function formatDate(value) {
@@ -2627,7 +3375,7 @@ function formatDate(value) {
   const normalized = text.includes("T") || text.includes(" ") ? text.replace(" ", "T") : `${text}T00:00:00`;
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(date);
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "short" }).format(date);
 }
 
 function mediaYear(value) {
@@ -2693,12 +3441,12 @@ function initials(title) {
 
 function coverVars(title) {
   const palettes = [
-    ["#ff4f61", "#19c2a5"],
-    ["#ffc857", "#2f9c95"],
-    ["#e85d75", "#345995"],
-    ["#7bd389", "#f45b69"],
-    ["#f7b267", "#2ec4b6"],
-    ["#b8f2e6", "#ed6a5a"],
+    ["#38bdf8", "#818cf8"],
+    ["#10b981", "#06b6d4"],
+    ["#f59e0b", "#f97316"],
+    ["#a855f7", "#ec4899"],
+    ["#6366f1", "#3b82f6"],
+    ["#14b8a6", "#3b82f6"],
   ];
   const hash = [...String(title || "")].reduce((sum, char) => sum + char.charCodeAt(0), 0);
   const [a, b] = palettes[hash % palettes.length];
@@ -2708,8 +3456,10 @@ function coverVars(title) {
 function renderFatalError(error) {
   return `
     <main class="loading-screen">
-      <img class="loading-mark" src="./assets/watchline-192.png" alt="Watchline" />
-      <p>${escapeHtml(error.message)}</p>
+      <div class="loading-mark-wrapper">
+        <img class="loading-mark" src="./assets/watchline-play-192.png?v=11" alt="Watchline" />
+      </div>
+      <p style="color: var(--danger); max-width: 480px; text-align: center;">Error loading library: ${escapeHtml(error.message)}</p>
     </main>
   `;
 }
@@ -2720,7 +3470,7 @@ function mediaImage(item) {
 
 function renderCover(title, image) {
   return `
-    <div class="cover ${image ? "cover-image" : ""}" style="${image ? `background-image:url('${escapeAttr(image)}')` : ""}">
+    <div class="cover ${image ? "" : "cover-fallback"}" style="${image ? `background-image:url('${escapeAttr(image)}')` : coverVars(title)}">
       ${image ? "" : `<span class="cover-initial">${initials(title)}</span>`}
     </div>
   `;

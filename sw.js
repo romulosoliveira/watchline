@@ -1,12 +1,12 @@
-const CACHE_NAME = "watchline-v3";
+const CACHE_NAME = "watchline-v11";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
-  "./manifest.webmanifest",
-  "./assets/watchline-192.png",
-  "./assets/watchline-512.png"
+  "./styles.css?v=11",
+  "./app.js?v=11",
+  "./manifest.webmanifest?v=11",
+  "./assets/watchline-play-192.png?v=11",
+  "./assets/watchline-play-512.png?v=11"
 ];
 
 self.addEventListener("install", (event) => {
