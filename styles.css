@@ -884,6 +884,16 @@ select:focus-visible {
   font-weight: 500;
 }
 
+.card-meta-complete {
+  color: var(--success);
+  font-weight: 500;
+}
+
+.card-meta-uptodate {
+  color: #38bdf8;
+  font-weight: 500;
+}
+
 /* Badges */
 .badges {
   display: flex;

@@ -8,19 +8,19 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Watchline" />
     <title>Watchline v1.1.0</title>
-    <link rel="icon" type="image/png" href="./assets/watchline-play-192.png?v=12" />
-    <link rel="manifest" href="./manifest.webmanifest?v=12" />
-    <link rel="apple-touch-icon" href="./assets/watchline-play-192.png?v=12" />
+    <link rel="icon" type="image/png" href="./assets/watchline-play-192.png?v=13" />
+    <link rel="manifest" href="./manifest.webmanifest?v=13" />
+    <link rel="apple-touch-icon" href="./assets/watchline-play-192.png?v=13" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=12" />
+    <link rel="stylesheet" href="./styles.css?v=13" />
   </head>
   <body>
     <div id="app" class="app-shell">
       <main class="loading-screen">
         <div class="loading-mark-wrapper">
-          <img class="loading-mark" src="./assets/watchline-play-192.png?v=12" alt="Watchline" />
+          <img class="loading-mark" src="./assets/watchline-play-192.png?v=13" alt="Watchline" />
           <div class="loading-spinner-ring"></div>
         </div>
         <p class="loading-text">Loading Watchline library...</p>
@@ -41,7 +41,7 @@
 
         window.addEventListener("load", async () => {
           try {
-            const registration = await navigator.serviceWorker.register("./sw.js?v=12", { updateViaCache: "none" });
+            const registration = await navigator.serviceWorker.register("./sw.js?v=13", { updateViaCache: "none" });
             await registration.update();
           } catch (_) {}
         });
@@ -52,6 +52,6 @@
         });
       }
     </script>
-    <script type="module" src="./app.js?v=12"></script>
+    <script type="module" src="./app.js?v=13"></script>
   </body>
 </html>

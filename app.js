@@ -18,7 +18,7 @@ const FORGOTTEN_SHOW_DAYS = 90;
 const state = {
   data: null,
   view: new URLSearchParams(window.location.search).get("view") || "home",
-  showFilter: "active",
+  showFilter: "continuing",
   movieFilter: "watched",
   showGenreFilter: "all",
   movieGenreFilter: "all",
@@ -349,26 +349,36 @@ function renderView() {
 function renderHomeView() {
   const stats = state.data.stats;
   const continueShows = getShows()
-    .filter((show) => show.followed && !show.archived && watchedCount(show) > 0 && hasNextAvailableEpisode(show))
+    .filter((show) => show.followed && !show.archived && !show.forLater && (showTrackingStatus(show).key === "continuing" || showTrackingStatus(show).key === "forgotten"))
     .sort((a, b) => lastWatchedTimestamp(b) - lastWatchedTimestamp(a))
-    .slice(0, 16);
+    .slice(0, 18);
+  const upToDateShows = getShows()
+    .filter((show) => show.followed && !show.archived && !show.forLater && (showTrackingStatus(show).key === "up-to-date" || showTrackingStatus(show).key === "waiting"))
+    .sort((a, b) => lastWatchedTimestamp(b) - lastWatchedTimestamp(a))
+    .slice(0, 18);
+  const completedShows = getShows()
+    .filter((show) => !show.archived && showTrackingStatus(show).key === "completed")
+    .sort((a, b) => lastWatchedTimestamp(b) - lastWatchedTimestamp(a))
+    .slice(0, 18);
   const laterShows = getShows()
     .filter((show) => show.forLater)
     .sort((a, b) => a.title.localeCompare(b.title))
-    .slice(0, 16);
+    .slice(0, 18);
   const favoriteShows = getShows()
     .filter((show) => show.favorite)
     .sort((a, b) => a.title.localeCompare(b.title))
-    .slice(0, 16);
+    .slice(0, 18);
   const watchlistMovies = getMovies()
     .filter((movie) => movie.watchlist)
-    .slice(0, 16);
+    .slice(0, 18);
 
   return `
     ${renderStatsSection(stats)}
-    ${renderShelf("Continue Watching", "Shows with released episodes ready to watch", continueShows, "home:continue")}
-    ${renderShelf("Watch Later", "Saved shows for future viewing", laterShows, "home:later")}
-    ${renderShelf("Favorites", "Top favorites and prized collections", favoriteShows, "home:favorites")}
+    ${renderShelf("Continue Watching", "Shows with unviewed episodes ready to watch", continueShows, "home:continue")}
+    ${upToDateShows.length ? renderShelf("Up to Date", "Ongoing series you are caught up on, waiting for new seasons or episodes", upToDateShows, "home:up-to-date") : ""}
+    ${completedShows.length ? renderShelf("Completed Series", "Finished and concluded shows where all episodes were watched", completedShows, "home:completed") : ""}
+    ${laterShows.length ? renderShelf("Watch Later", "Saved shows for future viewing", laterShows, "home:later") : ""}
+    ${favoriteShows.length ? renderShelf("Favorites", "Top favorites and prized collections", favoriteShows, "home:favorites") : ""}
     ${watchlistMovies.length ? renderMovieShelf("Movie Watchlist", "Movies queued up to watch", watchlistMovies, "home:movies-watchlist") : ""}
   `;
 }
@@ -513,13 +523,12 @@ function renderShowsView() {
         ${state.search ? `<button class="search-clear-btn" data-action="clear-search" title="Clear search">✕</button>` : ""}
       </label>
       <div class="segmented" role="tablist">
-        ${renderShowFilterButton("active", "Active")}
-        ${renderShowFilterButton("continuing", "Continue")}
-        ${renderShowFilterButton("up-to-date", "Up to date")}
+        ${renderShowFilterButton("continuing", "In Progress")}
+        ${renderShowFilterButton("up-to-date", "Up to Date")}
+        ${renderShowFilterButton("completed", "Completed")}
         ${renderShowFilterButton("waiting", "Waiting")}
         ${renderShowFilterButton("forgotten", "Forgotten")}
-        ${renderShowFilterButton("completed", "Completed")}
-        ${renderShowFilterButton("later", "Watch later")}
+        ${renderShowFilterButton("later", "Watch Later")}
         ${renderShowFilterButton("favorites", "Favorites")}
         ${renderShowFilterButton("archived", "Archived")}
         ${renderShowFilterButton("all", "All")}
@@ -647,10 +656,10 @@ function renderShowCard(show) {
   const total = hasCatalog(show) ? (show.catalogEpisodes || []).length : watched;
   const pct = total > 0 ? Math.min(100, Math.round((watched / total) * 100)) : 0;
   const next = nextEpisode(show);
-  const last = lastWatchedEpisode(show) || lastEpisode(show);
   const image = mediaImage(show);
   const year = mediaYear(show.premiered);
   const trackingStatus = showTrackingStatus(show);
+  const isInProgress = trackingStatus.key === "continuing" || trackingStatus.key === "forgotten";
   
   const badges = [
     renderShowTrackingBadge(trackingStatus),
@@ -662,7 +671,7 @@ function renderShowCard(show) {
     <article class="show-card">
       <div class="card-quick-actions">
         ${
-          next
+          isInProgress && next
             ? `<button class="quick-action-btn" data-action="quick-watch-next" data-id="${escapeAttr(show.id)}" title="Mark Next: S${next.season}E${next.number}">
                 <i data-lucide="plus"></i>
               </button>`
@@ -689,7 +698,15 @@ function renderShowCard(show) {
         <div class="card-body">
           <h3 class="card-title">${escapeHtml(show.title)}</h3>
           <p class="card-meta">
-            ${next ? `<span class="card-meta-highlight">Next: S${next.season}E${next.number}</span> · ` : ""}${formatCount(watched)}${total > watched ? `/${formatCount(total)}` : ""} eps${year ? ` · ${year}` : ""}
+            ${
+              isInProgress && next
+                ? `<span class="card-meta-highlight">Next: S${next.season}E${next.number}</span> · `
+                : trackingStatus.key === "completed"
+                  ? `<span class="card-meta-complete">Completed</span> · `
+                  : trackingStatus.key === "up-to-date" || trackingStatus.key === "waiting"
+                    ? `<span class="card-meta-uptodate">Up to date</span> · `
+                    : ""
+            }${formatCount(watched)}${total > watched ? `/${formatCount(total)}` : ""} eps${year ? ` · ${year}` : ""}
           </p>
           <div class="badges">${badges}</div>
         </div>
@@ -3033,17 +3050,31 @@ function filterShows() {
 }
 
 function matchesShowFilter(show, filter) {
-  if (filter === "active") return isActiveShow(show);
   if (filter === "later") return Boolean(show.forLater);
   if (filter === "favorites") return Boolean(show.favorite);
   if (filter === "archived") return Boolean(show.archived);
   if (filter === "all") return true;
+  
   const trackingStatus = showTrackingStatus(show).key;
-  if (filter === "continuing") return trackingStatus === "continuing" || trackingStatus === "forgotten";
-  if (filter === "up-to-date") return trackingStatus === "up-to-date" || trackingStatus === "waiting";
-  if (filter === "waiting") return trackingStatus === "waiting";
-  if (filter === "forgotten") return trackingStatus === "forgotten";
-  if (filter === "completed") return trackingStatus === "completed";
+  
+  if (filter === "active") {
+    return Boolean(show.followed && !show.archived && !show.forLater && trackingStatus !== "completed");
+  }
+  if (filter === "continuing") {
+    return Boolean(show.followed && !show.archived && !show.forLater && (trackingStatus === "continuing" || trackingStatus === "forgotten"));
+  }
+  if (filter === "up-to-date") {
+    return Boolean(show.followed && !show.archived && !show.forLater && (trackingStatus === "up-to-date" || trackingStatus === "waiting"));
+  }
+  if (filter === "completed") {
+    return Boolean(!show.archived && trackingStatus === "completed");
+  }
+  if (filter === "waiting") {
+    return Boolean(show.followed && !show.archived && !show.forLater && trackingStatus === "waiting");
+  }
+  if (filter === "forgotten") {
+    return Boolean(show.followed && !show.archived && !show.forLater && trackingStatus === "forgotten");
+  }
   return true;
 }
 
@@ -3211,49 +3242,75 @@ function isEndedShow(show) {
   const status = normalizeText(show.status);
   const endedAt = String(show.ended || "").slice(0, 10);
   const endedByDate = /^\d{4}-\d{2}-\d{2}$/.test(endedAt) && endedAt <= new Date().toISOString().slice(0, 10);
-  return endedByDate || ["ended", "finalizada", "concluida", "cancelled", "canceled"].some((value) => status.includes(value));
+  return (
+    endedByDate ||
+    ["ended", "finalizada", "concluida", "cancelled", "canceled", "closed", "terminated"].some((value) =>
+      status.includes(value),
+    )
+  );
 }
 
 function showTrackingStatus(show) {
   const watched = watchedCount(show);
-  if (!hasCatalog(show) || regularCatalogEpisodes(show).length === 0) {
-    return watched
-      ? { key: "unknown", label: "No catalog", tone: "", description: "Update the episodes to calculate this show's status." }
-      : { key: "not-started", label: "Not started", tone: "", description: "No watched episodes." };
+  if (watched === 0) {
+    return { key: "not-started", label: "Not started", tone: "", description: "No watched episodes." };
   }
 
-  const remaining = remainingAvailableEpisodes(show);
-  const future = futureCatalogEpisodes(show);
-  if (isEndedShow(show) && remaining.length === 0) {
-    return { key: "completed", label: "Completed", tone: "teal", description: "Every episode of this ended show has been watched." };
+  const hasCat = hasCatalog(show) && regularCatalogEpisodes(show).length > 0;
+  const remaining = hasCat ? remainingAvailableEpisodes(show) : [];
+  const future = hasCat ? futureCatalogEpisodes(show) : [];
+  const ended = isEndedShow(show);
+
+  // 1. Completed: Show is ended/cancelled AND all released episodes have been watched
+  if (ended && remaining.length === 0) {
+    return {
+      key: "completed",
+      label: "Completed",
+      tone: "teal",
+      description: "Every episode of this concluded or cancelled show has been watched.",
+    };
   }
-  if (!isEndedShow(show) && remaining.length === 0 && future.length > 0) {
+
+  // 2. Waiting: Up to date on an ongoing show with a confirmed next air date
+  if (!ended && remaining.length === 0 && future.length > 0) {
     return {
       key: "waiting",
       label: `Waiting · ${formatDate(future[0].airdate)}`,
       tone: "gold",
-      description: "You are up to date and the next episode has a release date.",
+      description: `Up to date. Next episode airs on ${formatDate(future[0].airdate)}.`,
     };
   }
-  if (!isEndedShow(show) && remaining.length === 0 && watched > 0) {
-    return { key: "up-to-date", label: "Up to date", tone: "teal", description: "Every released episode has been watched." };
+
+  // 3. Up to date: Ongoing show with all currently released episodes watched
+  if (!ended && remaining.length === 0) {
+    return {
+      key: "up-to-date",
+      label: "Up to date",
+      tone: "cyan",
+      description: "All released episodes watched. Waiting for next season.",
+    };
   }
-  if (remaining.length > 0 && watched > 0 && isForgottenShow(show)) {
+
+  // 4. Forgotten: Unwatched episodes available, but inactive for 90+ days
+  if (remaining.length > 0 && isForgottenShow(show)) {
     return {
       key: "forgotten",
       label: `Forgotten · ${formatCount(remaining.length)}`,
       tone: "red",
-      description: `There are unwatched episodes and no activity for at least ${FORGOTTEN_SHOW_DAYS} days.`,
+      description: `There are ${formatCount(remaining.length)} unwatched episodes and no activity for ${FORGOTTEN_SHOW_DAYS}+ days.`,
     };
   }
-  if (remaining.length > 0 && watched > 0) {
+
+  // 5. In Progress / Continuing: Unwatched episodes ready to watch
+  if (remaining.length > 0) {
     return {
       key: "continuing",
       label: `Continue · ${formatCount(remaining.length)}`,
       tone: "red",
-      description: `${formatCount(remaining.length)} released episodes have not been watched yet.`,
+      description: `${formatCount(remaining.length)} released episodes ready to watch.`,
     };
   }
+
   return { key: "not-started", label: "Not started", tone: "", description: "No watched episodes." };
 }
 
