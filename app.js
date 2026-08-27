@@ -1329,25 +1329,25 @@ function renderCommandPalette() {
   }
   
   const q = normalizeText(state.commandQuery);
-  const shows = getShows().filter((s) => !q || normalizeText(s.title).includes(q)).slice(0, 6);
-  const movies = getMovies().filter((m) => !q || normalizeText(m.title).includes(q)).slice(0, 6);
+  const shows = getShows().filter((s) => !q || normalizeText(s.title).includes(q)).slice(0, 8);
+  const movies = getMovies().filter((m) => !q || normalizeText(m.title).includes(q)).slice(0, 8);
   
   container.innerHTML = `
-    <div class="cmd-palette-backdrop" data-action="close-cmd-palette">
-      <div class="cmd-palette-modal" onclick="event.stopPropagation()">
+    <div class="cmd-palette-backdrop" id="cmd-backdrop">
+      <div class="cmd-palette-modal" id="cmd-modal">
         <div class="cmd-search-row">
           <i data-lucide="search"></i>
           <input id="cmd-search-input" class="cmd-search-input" placeholder="Type a command or search shows & movies..." value="${escapeAttr(state.commandQuery)}" autocomplete="off" enterkeyhint="go" />
-          <button class="cmd-k-badge" data-action="close-cmd-palette" title="Close (Esc)">ESC</button>
+          <button class="cmd-k-badge" id="cmd-close-btn" title="Close (Esc)">ESC</button>
         </div>
-        <div class="cmd-results-list">
+        <div class="cmd-results-list" id="cmd-results">
           ${
             shows.length
               ? `<div class="cmd-group-label">Shows</div>
                 ${shows
                   .map(
                     (s) => `
-                    <div class="cmd-item" data-action="cmd-select-show" data-id="${escapeAttr(s.id)}" role="button" tabindex="0">
+                    <div class="cmd-item" data-cmd-type="show" data-id="${escapeAttr(s.id)}" role="button" tabindex="0">
                       <i data-lucide="tv"></i>
                       <span>${escapeHtml(s.title)}</span>
                       <span class="cmd-item-meta">${watchedCount(s)} eps</span>
@@ -1363,7 +1363,7 @@ function renderCommandPalette() {
                 ${movies
                   .map(
                     (m) => `
-                    <div class="cmd-item" data-action="cmd-select-movie" data-id="${escapeAttr(m.id)}" role="button" tabindex="0">
+                    <div class="cmd-item" data-cmd-type="movie" data-id="${escapeAttr(m.id)}" role="button" tabindex="0">
                       <i data-lucide="film"></i>
                       <span>${escapeHtml(m.title)}</span>
                       <span class="cmd-item-meta">${m.watched ? "Watched" : "Watchlist"}</span>
@@ -1376,27 +1376,91 @@ function renderCommandPalette() {
           ${
             q
               ? `<div class="cmd-group-label">Online Database Search</div>
-                <div class="cmd-item" data-action="cmd-search-tvmaze" data-query="${escapeAttr(state.commandQuery)}" role="button" tabindex="0">
+                <div class="cmd-item" data-cmd-type="tvmaze" data-query="${escapeAttr(state.commandQuery)}" role="button" tabindex="0">
                   <i data-lucide="globe"></i>
                   <span>Search TVmaze for "<strong>${escapeHtml(state.commandQuery)}</strong>"</span>
                 </div>`
               : `<div class="cmd-group-label">Quick Navigation</div>
-                <div class="cmd-item" data-action="cmd-nav" data-view="home" role="button" tabindex="0"><i data-lucide="layout-dashboard"></i><span>Home Dashboard</span></div>
-                <div class="cmd-item" data-action="cmd-nav" data-view="shows" role="button" tabindex="0"><i data-lucide="tv"></i><span>Shows Library</span></div>
-                <div class="cmd-item" data-action="cmd-nav" data-view="movies" role="button" tabindex="0"><i data-lucide="film"></i><span>Movies Library</span></div>
-                <div class="cmd-item" data-action="cmd-nav" data-view="add-show" role="button" tabindex="0"><i data-lucide="plus-circle"></i><span>Add New Show</span></div>
-                <div class="cmd-item" data-action="cmd-nav" data-view="sync" role="button" tabindex="0"><i data-lucide="cloud"></i><span>Google Drive & Settings</span></div>`
+                <div class="cmd-item" data-cmd-type="nav" data-view="home" role="button" tabindex="0"><i data-lucide="layout-dashboard"></i><span>Home Dashboard</span></div>
+                <div class="cmd-item" data-cmd-type="nav" data-view="shows" role="button" tabindex="0"><i data-lucide="tv"></i><span>Shows Library</span></div>
+                <div class="cmd-item" data-cmd-type="nav" data-view="movies" role="button" tabindex="0"><i data-lucide="film"></i><span>Movies Library</span></div>
+                <div class="cmd-item" data-cmd-type="nav" data-view="add-show" role="button" tabindex="0"><i data-lucide="plus-circle"></i><span>Add New Show</span></div>
+                <div class="cmd-item" data-cmd-type="nav" data-view="sync" role="button" tabindex="0"><i data-lucide="cloud"></i><span>Google Drive & Settings</span></div>`
           }
         </div>
         <div class="cmd-footer">
-          <span>Tip: Press <strong>Esc</strong> to close</span>
+          <span>Tip: Click outside or press <strong>Esc</strong> to close</span>
           <span>Watchline ${APP_VERSION}</span>
         </div>
       </div>
     </div>
   `;
-  bindActionControls(container);
   refreshIcons();
+
+  const backdrop = document.getElementById("cmd-backdrop");
+  const modal = document.getElementById("cmd-modal");
+  const closeBtn = document.getElementById("cmd-close-btn");
+  const results = document.getElementById("cmd-results");
+
+  // Click outside (on backdrop) closes the modal
+  if (backdrop && modal) {
+    backdrop.addEventListener("pointerdown", (e) => {
+      if (e.target === backdrop || !modal.contains(e.target)) {
+        closeCommandPalette();
+      }
+    });
+  }
+
+  // Close button
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      closeCommandPalette();
+    });
+  }
+
+  // Delegated click on result items
+  if (results) {
+    results.addEventListener("click", (e) => {
+      const item = e.target.closest(".cmd-item");
+      if (!item) return;
+      e.stopPropagation();
+      const type = item.dataset.cmdType;
+      if (type === "show") {
+        state.selectedShowId = item.dataset.id;
+        state.selectedMovieId = null;
+        state.view = "shows";
+        closeCommandPalette();
+        render();
+        return;
+      }
+      if (type === "movie") {
+        state.selectedMovieId = item.dataset.id;
+        state.selectedShowId = null;
+        state.view = "movies";
+        closeCommandPalette();
+        render();
+        return;
+      }
+      if (type === "nav") {
+        state.view = item.dataset.view;
+        state.selectedShowId = null;
+        state.selectedMovieId = null;
+        closeCommandPalette();
+        render();
+        return;
+      }
+      if (type === "tvmaze") {
+        state.addShowQuery = item.dataset.query || "";
+        state.view = "add-show";
+        state.selectedShowId = null;
+        state.selectedMovieId = null;
+        closeCommandPalette();
+        render();
+        searchTvmaze();
+        return;
+      }
+    });
+  }
   
   const input = document.getElementById("cmd-search-input");
   if (input) {
